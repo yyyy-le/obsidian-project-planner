@@ -288,14 +288,14 @@ export class TaskDetailView extends ItemView {
     //
     // CHECKLIST / SUBTASKS
     //
-    container.createEl("h3", { text: "Checklist" });
+    container.createEl("h3", { text: "检查清单" });
 
     const checklistWrapper = container.createDiv("planner-subtask-list");
     const subtasks = task.subtasks ?? [];
 
     if (subtasks.length === 0) {
       checklistWrapper.createEl("div", {
-        text: "No checklist items. Use the button below to add one.",
+        text: "暂无检查清单项目，请使用下方按钮添加。",
         cls: "planner-subtask-empty",
       });
     } else {
@@ -306,7 +306,7 @@ export class TaskDetailView extends ItemView {
 
     const addBtn = container.createEl("button", {
       cls: "planner-subtask-add",
-      text: "Add checklist item",
+      text: "添加检查清单项目",
     });
 
     addBtn.onclick = async () => {
@@ -317,7 +317,7 @@ export class TaskDetailView extends ItemView {
         ...current,
         {
           id: this.createSubtaskId(),
-          title: "New checklist item",
+          title: "新的检查清单项目",
           completed: false,
         },
       ];
@@ -328,12 +328,12 @@ export class TaskDetailView extends ItemView {
     //
     // CARD PREVIEW — what to show on board card
     //
-    container.createEl("h3", { text: "Card Preview" });
+    container.createEl("h3", { text: "卡片预览" });
     const cardPreviewOptions = ["none", "checklist", "description"];
     const cardPreviewLabels: Record<string, string> = {
-      none: "Hide checklist and description",
-      checklist: "Show checklist on card",
-      description: "Show description on card"
+      none: "不显示检查清单和说明",
+      checklist: "在卡片上显示检查清单",
+      description: "在卡片上显示任务说明"
     };
     const cardPreviewContainer = container.createDiv();
     const cardPreviewSelect = cardPreviewContainer.createEl("select", {
