@@ -1,7 +1,7 @@
 {
   "name": "obsidian-project-planner",
   "version": "0.8.5",
-  "description": "A Microsoft Planner–style project management plugin for Obsidian with grid, board, and timeline views.",
+  "description": "面向个人项目工作的 Obsidian 项目计划与文档管理插件。",
   "main": "main.js",
   "type": "module",
   "scripts": {
@@ -21,7 +21,7 @@
     "kanban",
     "gantt"
   ],
-  "author": "James Hawkins",
+  "author": "yyyy-le",
   "license": "MIT",
   "devDependencies": {
     "@rollup/plugin-commonjs": "^25.0.7",

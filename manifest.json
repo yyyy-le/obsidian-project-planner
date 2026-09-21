@@ -3,8 +3,8 @@
   "name": "Project Planner",
   "version": "0.8.5",
   "minAppVersion": "1.5.0",
-  "description": "A Microsoft Planner–style project management plugin for Obsidian with grid, board, and timeline views.",
-  "author": "James Hawkins",
-  "authorUrl": "https://github.com/ArctykDev",
+  "description": "面向个人项目工作的 Obsidian 项目计划与文档管理插件。",
+  "author": "yyyy-le",
+  "authorUrl": "https://github.com/yyyy-le",
   "isDesktopOnly": true
 }
