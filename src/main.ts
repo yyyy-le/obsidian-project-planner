@@ -42,6 +42,17 @@ export default class ProjectPlannerPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
+    // Remove the retired dependency-graph page from saved workspaces and
+    // discard its old visibility setting during the first load after upgrade.
+    this.app.workspace.detachLeavesOfType("project-planner-dependency-graph");
+    const legacySettings = this.settings as ProjectPlannerSettings & {
+      showRibbonIconGraph?: boolean;
+    };
+    if ("showRibbonIconGraph" in legacySettings) {
+      delete legacySettings.showRibbonIconGraph;
+      await this.saveSettings();
+    }
+
     // Present the plugin UI in Simplified Chinese without changing persisted
     // status/priority values used by scheduling and reporting logic.
     this.register(startChineseUi());

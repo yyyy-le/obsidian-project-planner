@@ -8563,11 +8563,33 @@ class MyDayView extends obsidian.ItemView {
     }
 }
 
+const TASK_PLAN_FOLDER = "任务计划";
+/** Resolve the real vault-relative folder containing project documents. */
+function getProjectRootPath(settings, project) {
+    const configured = project.documentRootPath?.trim();
+    if (configured) {
+        return obsidian.normalizePath(configured.replace(/^\/+|\/+$/g, ""));
+    }
+    const base = (settings.projectsBasePath || "Project Planner").trim();
+    return obsidian.normalizePath(`${base}/${project.storageKey ?? project.name}`);
+}
+/** Resolve the separate planner storage folder for a project. */
+function getPlannerProjectRootPath(settings, project) {
+    const base = (settings.projectsBasePath || "Project Planner").trim();
+    return obsidian.normalizePath(`${base}/${project.storageKey ?? project.name}`);
+}
+function getTaskPlanFolderPath(settings, project) {
+    return obsidian.normalizePath(`${getPlannerProjectRootPath(settings, project)}/${TASK_PLAN_FOLDER}`);
+}
+function getProjectTaskDataPath(settings, project) {
+    return obsidian.normalizePath(`${getTaskPlanFolderPath(settings, project)}/.planner-tasks.json`);
+}
+
 const VIEW_TYPE_PROJECT_DOCUMENTS = "project-planner-documents-view";
+const FOLDER_CARD_COLORS = ["violet", "blue", "teal", "indigo", "orange", "rose"];
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
 const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "mkv", "webm", "avi", "m4v"]);
 const AUDIO_EXTENSIONS = new Set(["mp3", "wav", "m4a", "aac", "flac", "ogg"]);
-const MAX_RENDERED_ROWS = 3000;
 class DocumentRootModal extends obsidian.Modal {
     constructor(plugin, project, onSaved) {
         super(plugin.app);
@@ -8580,9 +8602,9 @@ class DocumentRootModal extends obsidian.Modal {
         let value = this.project.documentRootPath ?? "";
         new obsidian.Setting(this.contentEl)
             .setName("项目目录")
-            .setDesc("填写相对于 Obsidian 仓库根目录的文件夹路径，例如：professional/10-进行中项目/客从何处来")
+            .setDesc("填写相对于当前 Obsidian 仓库根目录的项目文件夹，例如：少儿沙盘")
             .addText((text) => {
-            text.setPlaceholder("professional/项目名称");
+            text.setPlaceholder("少儿沙盘");
             text.setValue(value);
             text.onChange((next) => { value = next.trim(); });
             text.inputEl.style.width = "100%";
@@ -8614,29 +8636,19 @@ class ProjectDocumentsView extends obsidian.ItemView {
         this.plugin = plugin;
         this.filter = "all";
         this.query = "";
-        this.nestedCounts = true;
-        this.expandedPaths = new Set();
-        this.expandDepth = 0;
         this.pinnedRootPath = null;
         this.mediaMode = false;
     }
     getViewType() { return VIEW_TYPE_PROJECT_DOCUMENTS; }
     getDisplayText() { return "项目文档"; }
     getIcon() { return "folder-tree"; }
-    async onOpen() { this.render(); }
+    async onOpen() { await this.render(); }
     getActiveProject() {
         return this.plugin.settings.projects.find((p) => p.id === this.plugin.settings.activeProjectId) ?? null;
     }
     getConfiguredRoot(project) {
-        const configured = project.documentRootPath;
-        if (configured) {
-            const item = this.app.vault.getAbstractFileByPath(obsidian.normalizePath(configured));
-            if (item instanceof obsidian.TFolder)
-                return item;
-        }
-        const base = (this.plugin.settings.projectsBasePath || "Project Planner").trim();
-        const fallback = obsidian.normalizePath(`${base}/${project.storageKey ?? project.name}`);
-        const item = this.app.vault.getAbstractFileByPath(fallback);
+        const rootPath = getProjectRootPath(this.plugin.settings, project);
+        const item = this.app.vault.getAbstractFileByPath(rootPath);
         return item instanceof obsidian.TFolder ? item : null;
     }
     getDisplayRoot(projectRoot) {
@@ -8696,11 +8708,6 @@ class ProjectDocumentsView extends obsidian.ItemView {
         walk(folder);
         return { folders, files };
     }
-    hasMatchingDescendant(folder) {
-        if (!this.query && this.filter === "all")
-            return true;
-        return this.filesUnder(folder).length > 0;
-    }
     async openFile(file) {
         await this.app.workspace.getLeaf("tab").openFile(file);
     }
@@ -8714,82 +8721,130 @@ class ProjectDocumentsView extends obsidian.ItemView {
             default: return "file";
         }
     }
+    folderDescriptionFile(folder) {
+        return folder.children.find((child) => child instanceof obsidian.TFile && child.basename === "文件说明" && child.extension === "md") ?? null;
+    }
+    async folderCardInfo(folder) {
+        const note = this.folderDescriptionFile(folder);
+        if (!note)
+            return null;
+        const cache = this.app.metadataCache.getFileCache(note);
+        const title = String(cache?.frontmatter?.title || folder.name);
+        const rawTags = cache?.frontmatter?.tags;
+        const tags = (Array.isArray(rawTags) ? rawTags : typeof rawTags === "string" ? [rawTags] : [])
+            .map((tag) => String(tag))
+            .filter((tag) => tag !== "文件说明" && tag !== "项目/少儿沙盘")
+            .slice(0, 3);
+        const tone = String(cache?.frontmatter?.card_color || "violet");
+        const frontmatterSummary = cache?.frontmatter?.summary ?? cache?.frontmatter?.description;
+        if (frontmatterSummary) {
+            return { title, summary: String(frontmatterSummary), tags, tone };
+        }
+        const content = await this.app.vault.cachedRead(note);
+        const body = content
+            .replace(/^---[\s\S]*?---\s*/u, "")
+            .replace(/^#.+$/gm, "")
+            .split(/\n\s*\n/u)
+            .map((part) => part.replace(/\s+/gu, " ").trim())
+            .find(Boolean) || "此文件夹用于存放项目资料。";
+        return { title, summary: body.slice(0, 140), tags, tone };
+    }
+    async renderFolderCards(host, root) {
+        const folders = root.children
+            .filter((child) => child instanceof obsidian.TFolder)
+            .sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
+        const describedFolders = [];
+        for (const folder of folders) {
+            const info = await this.folderCardInfo(folder);
+            if (info)
+                describedFolders.push({ folder, info });
+        }
+        const section = host.createDiv("planner-docs-folder-section");
+        const header = section.createDiv("planner-docs-folder-section-header");
+        header.createEl("h3", { text: "文件夹" });
+        const createButton = header.createEl("button", { cls: "planner-docs-create-folder-button" });
+        obsidian.setIcon(createButton, "folder-plus");
+        createButton.createSpan({ text: "新建文件夹" });
+        createButton.onclick = () => {
+            new CreateProjectFolderModal(this.plugin, root, () => { void this.render(); }).open();
+        };
+        if (describedFolders.length === 0) {
+            section.createDiv({
+                cls: "planner-docs-folder-card-empty",
+                text: "当前层还没有带“文件说明.md”的卡片文件夹。",
+            });
+            return;
+        }
+        const grid = section.createDiv("planner-docs-folder-grid");
+        describedFolders.forEach(({ folder, info }) => {
+            const count = this.directCount(folder);
+            const card = grid.createDiv("planner-docs-folder-card");
+            card.dataset.tone = info.tone;
+            const icon = card.createDiv("planner-docs-folder-card-icon");
+            obsidian.setIcon(icon, "folder");
+            const content = card.createDiv("planner-docs-folder-card-content");
+            content.createEl("h4", { text: info.title });
+            content.createDiv({ text: info.summary, cls: "planner-docs-folder-card-summary" });
+            if (info.tags.length > 0) {
+                const tagRow = content.createDiv("planner-docs-folder-card-tags");
+                info.tags.forEach((tag) => tagRow.createSpan({ text: tag, cls: "planner-docs-folder-card-tag" }));
+            }
+            content.createDiv({
+                text: `${count.folders} 个下级文件夹 · ${count.files} 个文件`,
+                cls: "planner-docs-folder-card-meta",
+            });
+            const arrow = card.createDiv("planner-docs-folder-card-arrow");
+            obsidian.setIcon(arrow, "chevron-right");
+            card.onclick = () => {
+                this.pinnedRootPath = folder.path;
+                void this.render();
+            };
+        });
+    }
     renderTree(host, root) {
-        let rendered = 0;
-        let truncated = false;
         const columns = host.createDiv("planner-docs-tree-columns");
         columns.createSpan({ text: "名称", cls: "planner-docs-column-name" });
         columns.createSpan({ text: "内容数量", cls: "planner-docs-column-count" });
         columns.createSpan({ text: "修改日期", cls: "planner-docs-column-date" });
-        columns.createSpan({ text: "固定", cls: "planner-docs-column-pin" });
-        const walk = (folder, depth) => {
-            if (rendered >= MAX_RENDERED_ROWS) {
-                truncated = true;
-                return;
-            }
-            const children = [...folder.children]
-                .filter((child) => child instanceof obsidian.TFile ? this.fileMatches(child) : this.hasMatchingDescendant(child))
-                .sort((a, b) => {
-                if (a instanceof obsidian.TFolder && b instanceof obsidian.TFile)
-                    return -1;
-                if (a instanceof obsidian.TFile && b instanceof obsidian.TFolder)
-                    return 1;
-                return a.name.localeCompare(b.name, "zh-CN", { numeric: true });
-            });
-            for (const child of children) {
-                if (rendered++ >= MAX_RENDERED_ROWS) {
-                    truncated = true;
-                    return;
-                }
-                if (child instanceof obsidian.TFolder) {
-                    const expanded = this.expandedPaths.has(child.path) || depth < this.expandDepth;
-                    const count = this.nestedCounts ? this.nestedCount(child) : this.directCount(child);
-                    const row = host.createDiv("planner-docs-tree-row planner-docs-folder-row");
-                    row.style.paddingLeft = `${12 + depth * 20}px`;
-                    const toggle = row.createEl("button", { cls: "planner-docs-tree-toggle", title: expanded ? "收起" : "展开" });
-                    obsidian.setIcon(toggle, expanded ? "chevron-down" : "chevron-right");
-                    const folderIcon = row.createSpan("planner-docs-tree-icon");
-                    obsidian.setIcon(folderIcon, expanded ? "folder-open" : "folder");
-                    row.createSpan({ text: child.name, cls: "planner-docs-tree-name" });
-                    row.createSpan({ text: `${count.folders} 个文件夹 · ${count.files} 个文件`, cls: "planner-docs-tree-count" });
-                    const pin = row.createEl("button", { cls: "planner-docs-pin", title: "固定为当前浏览根目录" });
-                    obsidian.setIcon(pin, "pin");
-                    pin.onclick = (event) => {
-                        event.stopPropagation();
-                        this.pinnedRootPath = child.path;
-                        this.expandedPaths.clear();
-                        this.render();
-                    };
-                    const toggleFolder = () => {
-                        if (expanded)
-                            this.expandedPaths.delete(child.path);
-                        else
-                            this.expandedPaths.add(child.path);
-                        this.render();
-                    };
-                    toggle.onclick = (event) => { event.stopPropagation(); toggleFolder(); };
-                    row.onclick = toggleFolder;
-                    if (expanded)
-                        walk(child, depth + 1);
-                }
-                else if (child instanceof obsidian.TFile) {
-                    const row = host.createDiv("planner-docs-tree-row planner-docs-file-row");
-                    row.style.paddingLeft = `${40 + depth * 20}px`;
-                    const icon = row.createSpan("planner-docs-tree-icon");
-                    obsidian.setIcon(icon, this.fileIcon(child));
-                    row.createSpan({ text: child.name, cls: "planner-docs-tree-name" });
-                    row.createSpan({ text: new Date(child.stat.mtime).toLocaleDateString("zh-CN"), cls: "planner-docs-tree-date" });
-                    row.onclick = () => void this.openFile(child);
-                }
-            }
-        };
-        walk(root, 0);
-        if (truncated) {
-            host.createDiv({
-                cls: "planner-docs-limit-notice",
-                text: `为保证页面流畅，目前最多显示 ${MAX_RENDERED_ROWS} 项。请固定较小的文件夹或使用搜索和类型筛选。`,
-            });
+        const children = root.children
+            .filter((child) => {
+            if (child instanceof obsidian.TFolder)
+                return !this.folderDescriptionFile(child);
+            return child instanceof obsidian.TFile && child.basename !== "文件说明" && this.fileMatches(child);
+        })
+            .sort((a, b) => {
+            if (a instanceof obsidian.TFolder && b instanceof obsidian.TFile)
+                return -1;
+            if (a instanceof obsidian.TFile && b instanceof obsidian.TFolder)
+                return 1;
+            return a.name.localeCompare(b.name, "zh-CN", { numeric: true });
+        });
+        if (children.length === 0) {
+            host.createDiv({ cls: "planner-docs-empty", text: "当前层没有符合条件的文件。" });
+            return;
         }
+        children.forEach((child) => {
+            const row = host.createDiv("planner-docs-tree-row planner-docs-file-row");
+            const icon = row.createSpan("planner-docs-tree-icon");
+            if (child instanceof obsidian.TFolder) {
+                const count = this.directCount(child);
+                obsidian.setIcon(icon, "folder");
+                row.createSpan({ text: child.name, cls: "planner-docs-tree-name" });
+                row.createSpan({ text: `${count.folders} 个文件夹 · ${count.files} 个文件`, cls: "planner-docs-tree-count" });
+                row.createSpan({ text: "", cls: "planner-docs-tree-date" });
+                row.onclick = () => {
+                    this.pinnedRootPath = child.path;
+                    void this.render();
+                };
+            }
+            else if (child instanceof obsidian.TFile) {
+                obsidian.setIcon(icon, this.fileIcon(child));
+                row.createSpan({ text: child.name, cls: "planner-docs-tree-name" });
+                row.createSpan({ text: "文件", cls: "planner-docs-tree-count" });
+                row.createSpan({ text: new Date(child.stat.mtime).toLocaleDateString("zh-CN"), cls: "planner-docs-tree-date" });
+                row.onclick = () => void this.openFile(child);
+            }
+        });
     }
     renderMedia(host, root) {
         const files = this.filesUnder(root).filter((f) => ["image", "video", "audio", "pdf"].includes(this.classify(f)));
@@ -8814,24 +8869,7 @@ class ProjectDocumentsView extends obsidian.ItemView {
             host.createDiv({ cls: "planner-docs-limit-notice", text: `媒体较多，仅展示前 500 项；请使用搜索或文件类型筛选。` });
         }
     }
-    renderRecent(host, root) {
-        const recent = this.filesUnder(root).sort((a, b) => b.stat.mtime - a.stat.mtime).slice(0, 10);
-        const section = host.createDiv("planner-docs-recent");
-        section.createEl("h3", { text: "最近更新" });
-        if (recent.length === 0) {
-            section.createDiv({ text: "当前范围内没有文件。", cls: "planner-docs-empty" });
-            return;
-        }
-        recent.forEach((file) => {
-            const row = section.createDiv("planner-docs-recent-row");
-            const icon = row.createSpan("planner-docs-tree-icon");
-            obsidian.setIcon(icon, this.fileIcon(file));
-            row.createSpan({ text: file.name, cls: "planner-docs-recent-name" });
-            row.createSpan({ text: new Date(file.stat.mtime).toLocaleDateString("zh-CN"), cls: "planner-docs-tree-date" });
-            row.onclick = () => void this.openFile(file);
-        });
-    }
-    render() {
+    async render() {
         const container = this.containerEl.children[1];
         container.empty();
         container.addClass("planner-documents-wrapper");
@@ -8840,8 +8878,7 @@ class ProjectDocumentsView extends obsidian.ItemView {
             hideAddTask: true,
             onProjectChange: () => {
                 this.pinnedRootPath = null;
-                this.expandedPaths.clear();
-                this.render();
+                void this.render();
             },
         });
         const project = this.getActiveProject();
@@ -8863,17 +8900,13 @@ class ProjectDocumentsView extends obsidian.ItemView {
         const heading = container.createDiv("planner-docs-heading");
         const headingText = heading.createDiv();
         headingText.createEl("h2", { text: "项目文档中心" });
-        headingText.createDiv({ text: "查看当前项目的文件、文件夹与最近更新", cls: "planner-docs-subtitle" });
+        headingText.createDiv({ text: "通过文件夹卡片进入下一层，查看项目资料", cls: "planner-docs-subtitle" });
         headingText.createDiv({ text: root.path, cls: "planner-docs-root-path" });
         const headingActions = heading.createDiv("planner-docs-heading-actions");
-        if (this.pinnedRootPath) {
-            const resetRoot = headingActions.createEl("button", { text: "返回项目根目录" });
-            resetRoot.onclick = () => { this.pinnedRootPath = null; this.render(); };
-        }
         const setRoot = headingActions.createEl("button", { text: "设置目录" });
         setRoot.onclick = () => new DocumentRootModal(this.plugin, project, () => {
             this.pinnedRootPath = null;
-            this.render();
+            void this.render();
         }).open();
         const toolbar = container.createDiv("planner-docs-toolbar");
         const filter = toolbar.createEl("select", { cls: "planner-docs-filter" });
@@ -8884,28 +8917,17 @@ class ProjectDocumentsView extends obsidian.ItemView {
             const option = filter.createEl("option", { value, text: label });
             option.selected = this.filter === value;
         });
-        filter.onchange = () => { this.filter = filter.value; this.render(); };
+        filter.onchange = () => { this.filter = filter.value; void this.render(); };
         const search = toolbar.createEl("input", { type: "search", placeholder: "搜索文件和文件夹…", cls: "planner-docs-search" });
         search.value = this.query;
         search.onkeydown = (event) => { if (event.key === "Enter") {
             this.query = search.value;
-            this.render();
+            void this.render();
         } };
         search.onblur = () => { if (this.query !== search.value) {
             this.query = search.value;
-            this.render();
+            void this.render();
         } };
-        const counts = toolbar.createEl("button", { text: this.nestedCounts ? "数量：包含下级" : "数量：仅当前层", cls: this.nestedCounts ? "planner-docs-count-control active" : "planner-docs-count-control" });
-        counts.onclick = () => { this.nestedCounts = !this.nestedCounts; this.render(); };
-        const depthGroup = toolbar.createDiv("planner-docs-depth-group");
-        const collapse = depthGroup.createEl("button", { text: "收起", cls: this.expandDepth === 0 ? "active" : "" });
-        collapse.onclick = () => { this.expandDepth = 0; this.expandedPaths.clear(); this.render(); };
-        [1, 2, 3].forEach((level) => {
-            const button = depthGroup.createEl("button", { text: `${level} 层`, cls: this.expandDepth === level ? "active" : "" });
-            button.onclick = () => { this.expandDepth = level; this.expandedPaths.clear(); this.render(); };
-        });
-        const expandAll = depthGroup.createEl("button", { text: "全部", cls: this.expandDepth >= 99 ? "active" : "" });
-        expandAll.onclick = () => { this.expandDepth = 99; this.expandedPaths.clear(); this.render(); };
         const stats = container.createDiv("planner-docs-stats");
         const fileStat = stats.createDiv("planner-docs-stat-card");
         fileStat.createDiv({ text: String(allCounts.files), cls: "planner-docs-stat-value" });
@@ -8918,27 +8940,132 @@ class ProjectDocumentsView extends obsidian.ItemView {
         const mediaStat = stats.createDiv("planner-docs-stat-card");
         mediaStat.createDiv({ text: String(mediaCount), cls: "planner-docs-stat-value" });
         mediaStat.createDiv({ text: "可预览附件", cls: "planner-docs-stat-label" });
-        const recentThreshold = Date.now() - 7 * 24 * 60 * 60 * 1000;
-        const recentCount = matchingFiles.filter((file) => file.stat.mtime >= recentThreshold).length;
-        const recentStat = stats.createDiv("planner-docs-stat-card");
-        recentStat.createDiv({ text: String(recentCount), cls: "planner-docs-stat-value" });
-        recentStat.createDiv({ text: "近 7 天更新", cls: "planner-docs-stat-label" });
+        await this.renderFolderCards(container, root);
         const browser = container.createDiv("planner-docs-browser");
         const browserHeader = browser.createDiv("planner-docs-browser-header");
         const browserTabs = browserHeader.createDiv("planner-docs-browser-tabs");
         browserTabs.createEl("strong", { text: "项目文件" });
         const treeTab = browserTabs.createEl("button", { text: "目录树", cls: !this.mediaMode ? "active" : "" });
-        treeTab.onclick = () => { this.mediaMode = false; this.render(); };
+        treeTab.onclick = () => { this.mediaMode = false; void this.render(); };
         const mediaTab = browserTabs.createEl("button", { text: "附件预览", cls: this.mediaMode ? "active" : "" });
-        mediaTab.onclick = () => { this.mediaMode = true; this.render(); };
-        const headerMedia = browserHeader.createEl("button", { cls: "planner-docs-browser-mode", title: this.mediaMode ? "切换到目录树" : "切换到附件预览" });
+        mediaTab.onclick = () => { this.mediaMode = true; void this.render(); };
+        const browserActions = browserHeader.createDiv("planner-docs-browser-actions");
+        if (root.path !== projectRoot.path) {
+            const backButton = browserActions.createEl("button", {
+                text: "返回",
+                cls: "planner-docs-back-button",
+                title: "返回上一级文件夹",
+            });
+            backButton.onclick = () => {
+                const parent = root.parent;
+                this.pinnedRootPath = parent instanceof obsidian.TFolder && parent.path.startsWith(projectRoot.path)
+                    ? parent.path
+                    : null;
+                void this.render();
+            };
+        }
+        const headerMedia = browserActions.createEl("button", { cls: "planner-docs-browser-mode", title: this.mediaMode ? "切换到目录树" : "切换到附件预览" });
         obsidian.setIcon(headerMedia, this.mediaMode ? "list-tree" : "layout-grid");
-        headerMedia.onclick = () => { this.mediaMode = !this.mediaMode; this.render(); };
+        headerMedia.onclick = () => { this.mediaMode = !this.mediaMode; void this.render(); };
         if (this.mediaMode)
             this.renderMedia(browser, root);
         else
             this.renderTree(browser, root);
-        this.renderRecent(container, root);
+    }
+}
+class CreateProjectFolderModal extends obsidian.Modal {
+    constructor(plugin, parent, onCreated) {
+        super(plugin.app);
+        this.plugin = plugin;
+        this.parent = parent;
+        this.onCreated = onCreated;
+    }
+    onOpen() {
+        this.setTitle("新建项目文件夹");
+        let name = "";
+        let summary = "";
+        let tags = "";
+        this.contentEl.createDiv({
+            cls: "planner-docs-create-folder-location",
+            text: `创建位置：${this.parent.path}`,
+        });
+        new obsidian.Setting(this.contentEl)
+            .setName("文件夹名称")
+            .setDesc("使用清楚、具体的业务名称，不需要添加序号。")
+            .addText((text) => {
+            text.setPlaceholder("例如：宣传研究");
+            text.onChange((value) => { name = value.trim(); });
+            text.inputEl.style.width = "100%";
+        });
+        new obsidian.Setting(this.contentEl)
+            .setName("文件说明")
+            .setDesc("用一句话说明这里存放什么内容。")
+            .addTextArea((text) => {
+            text.setPlaceholder("例如：存放少儿沙盘项目的宣传方向研究与定稿材料。");
+            text.onChange((value) => { summary = value.trim(); });
+            text.inputEl.rows = 3;
+            text.inputEl.style.width = "100%";
+        });
+        new obsidian.Setting(this.contentEl)
+            .setName("标签")
+            .setDesc("建议填写 1—3 个，用逗号分隔。")
+            .addText((text) => {
+            text.setPlaceholder("例如：宣传, 研究");
+            text.onChange((value) => { tags = value; });
+            text.inputEl.style.width = "100%";
+        });
+        const actions = this.contentEl.createDiv("planner-docs-modal-actions");
+        const cancel = actions.createEl("button", { text: "取消" });
+        cancel.onclick = () => this.close();
+        const create = actions.createEl("button", { text: "创建", cls: "mod-cta" });
+        create.onclick = async () => {
+            if (!name || !summary) {
+                new obsidian.Notice("请填写文件夹名称和文件说明。");
+                return;
+            }
+            if (name === "." || name === ".." || /[\\/:*?"<>|]/u.test(name)) {
+                new obsidian.Notice("文件夹名称包含不能使用的字符。");
+                return;
+            }
+            const targetPath = obsidian.normalizePath(`${this.parent.path}/${name}`);
+            if (this.app.vault.getAbstractFileByPath(targetPath)) {
+                new obsidian.Notice("当前层已经存在同名文件夹。");
+                return;
+            }
+            const normalizedTags = tags.split(/[,，]/u).map((tag) => tag.trim()).filter(Boolean).slice(0, 3);
+            const color = FOLDER_CARD_COLORS[Math.floor(Math.random() * FOLDER_CARD_COLORS.length)];
+            const tagLines = normalizedTags.length > 0
+                ? normalizedTags.map((tag) => `  - ${JSON.stringify(tag)}`).join("\n")
+                : "  - \"待分类\"";
+            const description = [
+                "---",
+                `title: ${JSON.stringify(name)}`,
+                `summary: ${JSON.stringify(summary)}`,
+                `card_color: ${color}`,
+                "tags:",
+                tagLines,
+                "---",
+                "",
+                `# ${name}`,
+                "",
+                summary,
+                "",
+            ].join("\n");
+            try {
+                await this.app.vault.createFolder(targetPath);
+                await this.app.vault.create(obsidian.normalizePath(`${targetPath}/文件说明.md`), description);
+                this.close();
+                this.onCreated();
+                new obsidian.Notice(`已创建：${name}`);
+            }
+            catch (error) {
+                console.error("Failed to create project folder", error);
+                new obsidian.Notice("创建失败，请检查文件夹名称或 Obsidian 权限。");
+            }
+        };
+    }
+    onClose() {
+        this.contentEl.empty();
     }
 }
 
@@ -8982,15 +9109,13 @@ class TaskStore {
     // ---------------------------------------------------------------------------
     /**
      * Returns the vault-relative path for a project's task file.
-     * e.g. "Project Planner/My Project/.planner-tasks.json"
+     * e.g. "Project Planner/少儿沙盘/任务计划/.planner-tasks.json"
      */
     getProjectFilePath(projectId) {
         const project = this.plugin.settings.projects.find(p => p.id === projectId);
         if (!project)
             return null;
-        const basePath = (this.plugin.settings.projectsBasePath || "Project Planner").trim();
-        const projectFolder = project.storageKey ?? project.name;
-        return obsidian.normalizePath(`${basePath}/${projectFolder}/.planner-tasks.json`);
+        return getProjectTaskDataPath(this.plugin.settings, project);
     }
     /** Read a project's tasks from its vault file. Returns null if file doesn't exist yet. */
     async readProjectFile(projectId) {
@@ -9887,7 +10012,8 @@ class TaskStore {
 
 /**
  * Handles bidirectional synchronization between plugin JSON data and vault markdown notes.
- * Tasks are stored as markdown files with YAML frontmatter in {ProjectName}/Tasks/{TaskTitle}.md
+ * Tasks are stored separately from project documents in
+ * {PlannerBase}/{ProjectName}/任务计划/{TaskTitle}.md
  */
 class TaskSync {
     constructor(app, plugin) {
@@ -10155,12 +10281,8 @@ class TaskSync {
             return `${task.title.replace(/[\\/:*?"<>|]/g, '-')}.md`;
         }
         const safeName = task.title.replace(/[\\/:*?"<>|]/g, '-');
-        const basePath = this.plugin.settings.projectsBasePath;
-        const projectFolder = project.storageKey ?? project.name;
-        if (basePath) {
-            return obsidian.normalizePath(`${basePath}/${projectFolder}/Tasks/${safeName}.md`);
-        }
-        return obsidian.normalizePath(`${projectFolder}/Tasks/${safeName}.md`);
+        const taskFolder = getTaskPlanFolderPath(this.plugin.settings, project);
+        return obsidian.normalizePath(`${taskFolder}/${safeName}.md`);
     }
     /**
      * Handle task rename by deleting old file and creating new one
@@ -10292,9 +10414,7 @@ class TaskSync {
         const project = this.resolveProject(projectId);
         if (!project)
             return;
-        const basePath = this.plugin.settings.projectsBasePath;
-        const projectFolder = project.storageKey ?? project.name;
-        const folderPath = basePath ? `${basePath}/${projectFolder}/Tasks` : `${projectFolder}/Tasks`;
+        const folderPath = getTaskPlanFolderPath(this.plugin.settings, project);
         const existingFolder = this.watchedProjects.get(projectId);
         if (existingFolder === folderPath) {
             return;
@@ -10346,9 +10466,7 @@ class TaskSync {
         if (project.lastSyncTimestamp && (now - project.lastSyncTimestamp) < fiveMinutes) {
             return;
         }
-        const basePath = this.plugin.settings.projectsBasePath;
-        const projectFolder = project.storageKey ?? project.name;
-        const folderPath = basePath ? `${basePath}/${projectFolder}/Tasks` : `${projectFolder}/Tasks`;
+        const folderPath = getTaskPlanFolderPath(this.plugin.settings, project);
         const folder = this.app.vault.getAbstractFileByPath(folderPath);
         if (!folder) {
             return;
@@ -11060,6 +11178,14 @@ class ProjectPlannerPlugin extends obsidian.Plugin {
     }
     async onload() {
         await this.loadSettings();
+        // Remove the retired dependency-graph page from saved workspaces and
+        // discard its old visibility setting during the first load after upgrade.
+        this.app.workspace.detachLeavesOfType("project-planner-dependency-graph");
+        const legacySettings = this.settings;
+        if ("showRibbonIconGraph" in legacySettings) {
+            delete legacySettings.showRibbonIconGraph;
+            await this.saveSettings();
+        }
         // Present the plugin UI in Simplified Chinese without changing persisted
         // status/priority values used by scheduling and reporting logic.
         this.register(startChineseUi());

@@ -2,6 +2,7 @@ import { normalizePath } from "obsidian";
 import type ProjectPlannerPlugin from "../main";
 import type { PlannerTask, DependencyType } from "../types";
 import { getTaskEstimatedCost, getTaskActualCost } from "../utils/costUtils";
+import { getProjectTaskDataPath } from "../utils/projectPaths";
 
 // Helper to get today's date in YYYY-MM-DD format
 function getTodayDate(): string {
@@ -44,7 +45,7 @@ interface StoredData {
   [key: string]: unknown; // allow other plugin data to coexist
 }
 
-/** Shape of per-project vault files: {basePath}/{projectName}/.planner-tasks.json */
+/** Shape of planner files: {plannerBase}/{projectName}/任务计划/.planner-tasks.json */
 interface ProjectFileData {
   version: number;
   projectId: string;
@@ -70,14 +71,12 @@ export class TaskStore {
 
   /**
    * Returns the vault-relative path for a project's task file.
-   * e.g. "Project Planner/My Project/.planner-tasks.json"
+   * e.g. "Project Planner/少儿沙盘/任务计划/.planner-tasks.json"
    */
   private getProjectFilePath(projectId: string): string | null {
     const project = this.plugin.settings.projects.find(p => p.id === projectId);
     if (!project) return null;
-    const basePath = (this.plugin.settings.projectsBasePath || "Project Planner").trim();
-    const projectFolder = project.storageKey ?? project.name;
-    return normalizePath(`${basePath}/${projectFolder}/.planner-tasks.json`);
+    return getProjectTaskDataPath(this.plugin.settings, project);
   }
 
   /** Read a project's tasks from its vault file. Returns null if file doesn't exist yet. */

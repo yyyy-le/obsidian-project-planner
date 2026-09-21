@@ -1,10 +1,12 @@
 import { App, TFile, normalizePath } from "obsidian";
 import { PlannerTask, TaskDependency, TaskLink, PlannerSubtask, DependencyType } from "../types";
 import type ProjectPlannerPlugin from "../main";
+import { getTaskPlanFolderPath } from "./projectPaths";
 
 /**
  * Handles bidirectional synchronization between plugin JSON data and vault markdown notes.
- * Tasks are stored as markdown files with YAML frontmatter in {ProjectName}/Tasks/{TaskTitle}.md
+ * Tasks are stored separately from project documents in
+ * {PlannerBase}/{ProjectName}/任务计划/{TaskTitle}.md
  */
 export class TaskSync {
     private app: App;
@@ -282,12 +284,8 @@ export class TaskSync {
             return `${task.title.replace(/[\\/:*?"<>|]/g, '-')}.md`;
         }
         const safeName = task.title.replace(/[\\/:*?"<>|]/g, '-');
-        const basePath = this.plugin.settings.projectsBasePath;
-        const projectFolder = project.storageKey ?? project.name;
-        if (basePath) {
-            return normalizePath(`${basePath}/${projectFolder}/Tasks/${safeName}.md`);
-        }
-        return normalizePath(`${projectFolder}/Tasks/${safeName}.md`);
+        const taskFolder = getTaskPlanFolderPath(this.plugin.settings, project);
+        return normalizePath(`${taskFolder}/${safeName}.md`);
     }
 
     /**
@@ -427,9 +425,7 @@ export class TaskSync {
         const project = this.resolveProject(projectId);
         if (!project) return;
 
-        const basePath = this.plugin.settings.projectsBasePath;
-        const projectFolder = project.storageKey ?? project.name;
-        const folderPath = basePath ? `${basePath}/${projectFolder}/Tasks` : `${projectFolder}/Tasks`;
+        const folderPath = getTaskPlanFolderPath(this.plugin.settings, project);
 
         const existingFolder = this.watchedProjects.get(projectId);
         if (existingFolder === folderPath) {
@@ -494,9 +490,7 @@ export class TaskSync {
             return;
         }
 
-        const basePath = this.plugin.settings.projectsBasePath;
-        const projectFolder = project.storageKey ?? project.name;
-        const folderPath = basePath ? `${basePath}/${projectFolder}/Tasks` : `${projectFolder}/Tasks`;
+        const folderPath = getTaskPlanFolderPath(this.plugin.settings, project);
         const folder = this.app.vault.getAbstractFileByPath(folderPath);
 
         if (!folder) {
