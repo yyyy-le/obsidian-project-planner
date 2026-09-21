@@ -16,7 +16,6 @@ const ZH: Record<string, string> = {
   "Grid": "任务表",
   "Board": "看板",
   "Timeline": "时间线",
-  "Graph": "依赖关系图",
   "Add Task": "添加任务",
   "New Task": "新建任务",
   "Columns": "列设置",

@@ -40,7 +40,6 @@ const DEFAULT_SETTINGS = {
     showRibbonIconGrid: true,
     showRibbonIconDashboard: false,
     showRibbonIconBoard: false,
-    showRibbonIconGraph: false,
     showRibbonIconDailyNoteScan: false,
     showRibbonIconMyTasks: false,
     myDayDefaultView: "today",
@@ -331,15 +330,6 @@ class ProjectPlannerSettingTab extends obsidian.PluginSettingTab {
             await this.plugin.saveSettings();
         }));
         new obsidian.Setting(containerEl)
-            .setName("Dependency Graph icon")
-            .setDesc("Show ribbon icon for opening Dependency Graph view")
-            .addToggle((toggle) => toggle
-            .setValue(this.plugin.settings.showRibbonIconGraph)
-            .onChange(async (value) => {
-            this.plugin.settings.showRibbonIconGraph = value;
-            await this.plugin.saveSettings();
-        }));
-        new obsidian.Setting(containerEl)
             .setName("Daily Note scan icon")
             .setDesc("Show ribbon icon for scanning daily notes (only visible when daily note sync is enabled)")
             .addToggle((toggle) => toggle
@@ -540,17 +530,6 @@ class ProjectPlannerSettingTab extends obsidian.PluginSettingTab {
         // Actions Section
         // -----------------------------------------------------------------------
         new obsidian.Setting(containerEl).setName("Actions").setHeading();
-        new obsidian.Setting(containerEl)
-            .setName("Open dependency graph")
-            .setDesc("Visualize task dependencies in an interactive graph view")
-            .addButton((btn) => {
-            btn
-                .setButtonText("Open graph")
-                .setCta()
-                .onClick(async () => {
-                await this.plugin.openDependencyGraph();
-            });
-        });
         new obsidian.Setting(containerEl)
             .setName("Create task notes")
             .setDesc("Generate individual markdown notes for all tasks in the current project")
@@ -863,12 +842,6 @@ function renderPlannerHeader(parent, plugin, options) {
     });
     obsidian.setIcon(ganttViewBtn, "calendar-range");
     ganttViewBtn.onclick = async () => await plugin.activateGanttView();
-    const graphViewBtn = viewSwitcher.createEl("button", {
-        cls: `planner-view-btn${options.active === "graph" ? " planner-view-btn-active" : ""}`,
-        title: "Graph",
-    });
-    obsidian.setIcon(graphViewBtn, "git-fork");
-    graphViewBtn.onclick = async () => await plugin.openDependencyGraph();
     const documentsViewBtn = viewSwitcher.createEl("button", {
         cls: `planner-view-btn${options.active === "documents" ? " planner-view-btn-active" : ""}`,
         title: "项目文档",
@@ -5569,430 +5542,6 @@ class TaskDetailView extends obsidian.ItemView {
             return crypto.randomUUID();
         }
         return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    }
-}
-
-const VIEW_TYPE_DEPENDENCY_GRAPH = "project-planner-dependency-graph";
-class DependencyGraphView extends obsidian.ItemView {
-    constructor(leaf, plugin) {
-        super(leaf);
-        this.canvas = null;
-        this.nodes = [];
-        this.edges = [];
-        this.selectedNode = null;
-        this.dragNode = null;
-        this.animationFrame = null;
-        this.unsubscribe = null;
-        this.resizeHandler = null;
-        this.needsRefresh = false;
-        this.closed = false;
-        this.plugin = plugin;
-    }
-    getViewType() {
-        return VIEW_TYPE_DEPENDENCY_GRAPH;
-    }
-    getDisplayText() {
-        return "Dependency Graph";
-    }
-    getIcon() {
-        return "git-fork";
-    }
-    async onOpen() {
-        const container = this.containerEl;
-        container.empty();
-        container.addClass("planner-graph-wrapper");
-        // Render global navigation header (shared)
-        renderPlannerHeader(container, this.plugin, {
-            active: "graph",
-            onProjectChange: async () => {
-                await this.plugin.taskStore.load();
-                await this.refresh();
-            }
-        });
-        // Graph-specific controls
-        const graphControls = container.createDiv("planner-graph-controls-bar");
-        const refreshBtn = graphControls.createEl("button", {
-            text: "Refresh",
-            cls: "planner-graph-btn"
-        });
-        refreshBtn.onclick = () => this.refresh();
-        const resetBtn = graphControls.createEl("button", {
-            text: "Reset Layout",
-            cls: "planner-graph-btn"
-        });
-        resetBtn.onclick = () => this.resetLayout();
-        // Canvas container
-        const canvasContainer = container.createDiv("planner-graph-canvas-container");
-        this.canvas = canvasContainer.createEl("canvas", {
-            cls: "planner-graph-canvas"
-        });
-        // Set canvas size
-        this.resizeCanvas();
-        this.resizeHandler = () => this.resizeCanvas();
-        this.registerDomEvent(window, "resize", this.resizeHandler);
-        // Setup mouse events
-        this.setupMouseEvents();
-        // Load and render
-        await this.plugin.taskStore.ensureLoaded();
-        this.unsubscribe = this.plugin.taskStore.subscribe(() => this.refresh());
-        await this.refresh();
-    }
-    async onClose() {
-        this.closed = true;
-        if (this.animationFrame) {
-            cancelAnimationFrame(this.animationFrame);
-            this.animationFrame = null;
-        }
-        // registerDomEvent handles resize, mousemove, mouseup cleanup automatically
-        this.containerEl.empty();
-        if (this.unsubscribe) {
-            this.unsubscribe();
-            this.unsubscribe = null;
-        }
-    }
-    // Old custom header removed in favor of shared helper
-    resizeCanvas() {
-        if (!this.canvas)
-            return;
-        const container = this.canvas.parentElement;
-        if (!container)
-            return;
-        const rect = container.getBoundingClientRect();
-        const dpr = window.devicePixelRatio || 1;
-        this.canvas.width = rect.width * dpr;
-        this.canvas.height = rect.height * dpr;
-        this.canvas.style.width = `${rect.width}px`;
-        this.canvas.style.height = `${rect.height}px`;
-        const ctx = this.canvas.getContext("2d");
-        if (ctx)
-            ctx.scale(dpr, dpr);
-        this.render();
-    }
-    setupMouseEvents() {
-        if (!this.canvas)
-            return;
-        let isDragging = false;
-        let offsetX = 0;
-        let offsetY = 0;
-        this.registerDomEvent(this.canvas, "mousedown", (e) => {
-            if (!this.canvas)
-                return;
-            const rect = this.canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            // Find clicked node
-            for (const node of this.nodes) {
-                const dx = x - node.x;
-                const dy = y - node.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                if (distance < 30) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    this.dragNode = node;
-                    isDragging = true;
-                    offsetX = dx;
-                    offsetY = dy;
-                    this.selectedNode = node;
-                    this.render();
-                    return;
-                }
-            }
-            this.selectedNode = null;
-            this.render();
-        });
-        // Bind mousemove/mouseup to document so drag continues outside canvas
-        this.registerDomEvent(document, "mousemove", (e) => {
-            if (isDragging && this.dragNode && this.canvas) {
-                e.preventDefault();
-                const rect = this.canvas.getBoundingClientRect();
-                this.dragNode.x = e.clientX - rect.left - offsetX;
-                this.dragNode.y = e.clientY - rect.top - offsetY;
-                this.dragNode.vx = 0;
-                this.dragNode.vy = 0;
-                this.render();
-            }
-        });
-        this.registerDomEvent(document, "mouseup", (_e) => {
-            if (isDragging && this.dragNode) {
-                // Zero velocity so the node stays where dropped
-                this.dragNode.vx = 0;
-                this.dragNode.vy = 0;
-            }
-            isDragging = false;
-            this.dragNode = null;
-            // If a refresh was deferred during the drag, run it now
-            if (this.needsRefresh) {
-                this.refresh();
-            }
-        });
-        // Double click to open task details
-        this.registerDomEvent(this.canvas, "dblclick", (e) => {
-            if (!this.selectedNode)
-                return;
-            this.plugin.openTaskDetail(this.selectedNode.task);
-        });
-    }
-    async refresh() {
-        if (this.closed)
-            return;
-        // Don't rebuild graph while user is dragging a node
-        if (this.dragNode) {
-            this.needsRefresh = true;
-            return;
-        }
-        this.needsRefresh = false;
-        const tasks = this.getAllTasks();
-        this.buildGraph(tasks);
-        this.startSimulation();
-    }
-    getAllTasks() {
-        const store = this.plugin.taskStore;
-        if (!store)
-            return [];
-        return store.getAll();
-    }
-    buildGraph(tasks) {
-        this.nodes = [];
-        this.edges = [];
-        // Only include tasks that have dependencies or are dependencies
-        const tasksWithDeps = tasks.filter(t => {
-            const hasDeps = (t.dependencies || []).length > 0;
-            const isDep = tasks.some(other => (other.dependencies || []).some(d => d.predecessorId === t.id));
-            return hasDeps || isDep;
-        });
-        if (tasksWithDeps.length === 0) {
-            // Show message if no dependencies
-            this.nodes = [];
-            this.edges = [];
-            this.render();
-            return;
-        }
-        // Create nodes
-        const width = this.canvas?.width || 800;
-        const height = this.canvas?.height || 600;
-        tasksWithDeps.forEach((task, index) => {
-            const angle = (index / tasksWithDeps.length) * Math.PI * 2;
-            const radius = Math.min(width, height) / 3;
-            this.nodes.push({
-                id: task.id,
-                task,
-                x: width / 2 + Math.cos(angle) * radius,
-                y: height / 2 + Math.sin(angle) * radius,
-                vx: 0,
-                vy: 0
-            });
-        });
-        // Create edges
-        tasksWithDeps.forEach(task => {
-            (task.dependencies || []).forEach(dep => {
-                this.edges.push({
-                    source: dep.predecessorId,
-                    target: task.id,
-                    type: dep.type
-                });
-            });
-        });
-    }
-    startSimulation() {
-        if (this.animationFrame) {
-            cancelAnimationFrame(this.animationFrame);
-        }
-        let iterations = 0;
-        const maxIterations = 300;
-        const animate = () => {
-            if (this.closed)
-                return;
-            if (iterations < maxIterations) {
-                this.applyForces();
-                this.render();
-                iterations++;
-                this.animationFrame = requestAnimationFrame(animate);
-            }
-        };
-        animate();
-    }
-    applyForces() {
-        const repulsionStrength = 5000;
-        const attractionStrength = 0.01;
-        const damping = 0.8;
-        // Repulsion between all nodes
-        for (let i = 0; i < this.nodes.length; i++) {
-            for (let j = i + 1; j < this.nodes.length; j++) {
-                const node1 = this.nodes[i];
-                const node2 = this.nodes[j];
-                const dx = node2.x - node1.x;
-                const dy = node2.y - node1.y;
-                const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-                const force = repulsionStrength / (distance * distance);
-                const fx = (dx / distance) * force;
-                const fy = (dy / distance) * force;
-                if (node1 !== this.dragNode) {
-                    node1.vx -= fx;
-                    node1.vy -= fy;
-                }
-                if (node2 !== this.dragNode) {
-                    node2.vx += fx;
-                    node2.vy += fy;
-                }
-            }
-        }
-        // Attraction along edges
-        this.edges.forEach(edge => {
-            const source = this.nodes.find(n => n.id === edge.source);
-            const target = this.nodes.find(n => n.id === edge.target);
-            if (source && target) {
-                const dx = target.x - source.x;
-                const dy = target.y - source.y;
-                const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-                const force = distance * attractionStrength;
-                const fx = (dx / distance) * force;
-                const fy = (dy / distance) * force;
-                if (source !== this.dragNode) {
-                    source.vx += fx;
-                    source.vy += fy;
-                }
-                if (target !== this.dragNode) {
-                    target.vx -= fx;
-                    target.vy -= fy;
-                }
-            }
-        });
-        // Update positions
-        this.nodes.forEach(node => {
-            if (node !== this.dragNode) {
-                node.x += node.vx;
-                node.y += node.vy;
-                node.vx *= damping;
-                node.vy *= damping;
-                // Keep nodes within bounds
-                const margin = 50;
-                if (this.canvas) {
-                    const dpr = window.devicePixelRatio || 1;
-                    const logicalW = this.canvas.width / dpr;
-                    const logicalH = this.canvas.height / dpr;
-                    node.x = Math.max(margin, Math.min(logicalW - margin, node.x));
-                    node.y = Math.max(margin, Math.min(logicalH - margin, node.y));
-                }
-            }
-        });
-    }
-    render() {
-        if (!this.canvas)
-            return;
-        const ctx = this.canvas.getContext("2d");
-        if (!ctx)
-            return;
-        // Clear (use logical dimensions since ctx is already scaled by dpr)
-        const dpr = window.devicePixelRatio || 1;
-        const logicalW = this.canvas.width / dpr;
-        const logicalH = this.canvas.height / dpr;
-        ctx.clearRect(0, 0, logicalW, logicalH);
-        // Check if empty
-        if (this.nodes.length === 0) {
-            ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--text-muted");
-            ctx.font = "14px var(--font-interface)";
-            ctx.textAlign = "center";
-            ctx.fillText("No task dependencies to visualize", logicalW / 2, logicalH / 2);
-            ctx.fillText("Create dependencies in the Task Details panel", logicalW / 2, logicalH / 2 + 25);
-            return;
-        }
-        // Draw edges
-        this.edges.forEach(edge => {
-            const source = this.nodes.find(n => n.id === edge.source);
-            const target = this.nodes.find(n => n.id === edge.target);
-            if (source && target) {
-                this.drawEdge(ctx, source, target, edge.type);
-            }
-        });
-        // Draw nodes
-        this.nodes.forEach(node => {
-            this.drawNode(ctx, node, node === this.selectedNode);
-        });
-    }
-    drawEdge(ctx, source, target, type) {
-        // Edge colors by type
-        const colors = {
-            FS: "#0a84ff", // Finish-to-Start (blue)
-            SS: "#2f9e44", // Start-to-Start (green)
-            FF: "#ff8c00", // Finish-to-Finish (orange)
-            SF: "#d70022" // Start-to-Finish (red)
-        };
-        ctx.strokeStyle = colors[type] || "#666";
-        ctx.lineWidth = 2;
-        ctx.setLineDash([]);
-        // Calculate arrow
-        const dx = target.x - source.x;
-        const dy = target.y - source.y;
-        const angle = Math.atan2(dy, dx);
-        // Shorten line to not overlap nodes
-        const startX = source.x + Math.cos(angle) * 30;
-        const startY = source.y + Math.sin(angle) * 30;
-        const endX = target.x - Math.cos(angle) * 30;
-        const endY = target.y - Math.sin(angle) * 30;
-        // Draw line
-        ctx.beginPath();
-        ctx.moveTo(startX, startY);
-        ctx.lineTo(endX, endY);
-        ctx.stroke();
-        // Draw arrowhead
-        const arrowSize = 10;
-        ctx.beginPath();
-        ctx.moveTo(endX, endY);
-        ctx.lineTo(endX - arrowSize * Math.cos(angle - Math.PI / 6), endY - arrowSize * Math.sin(angle - Math.PI / 6));
-        ctx.lineTo(endX - arrowSize * Math.cos(angle + Math.PI / 6), endY - arrowSize * Math.sin(angle + Math.PI / 6));
-        ctx.closePath();
-        ctx.fillStyle = colors[type] || "#666";
-        ctx.fill();
-        // Draw type label
-        const midX = (startX + endX) / 2;
-        const midY = (startY + endY) / 2;
-        ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--background-primary");
-        ctx.fillRect(midX - 15, midY - 8, 30, 16);
-        ctx.fillStyle = colors[type] || "#666";
-        ctx.font = "10px var(--font-interface)";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(type, midX, midY);
-    }
-    drawNode(ctx, node, isSelected) {
-        const task = node.task;
-        // Node circle
-        ctx.beginPath();
-        ctx.arc(node.x, node.y, 30, 0, Math.PI * 2);
-        // Status-based colors
-        const statusColors = {
-            "Not Started": "#6c757d",
-            "In Progress": "#0a84ff",
-            "Blocked": "#d70022",
-            "Completed": "#2f9e44"
-        };
-        ctx.fillStyle = statusColors[task.status] || "#6c757d";
-        ctx.fill();
-        if (isSelected) {
-            ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue("--interactive-accent");
-            ctx.lineWidth = 3;
-            ctx.stroke();
-        }
-        // Task title
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "12px var(--font-interface)";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        const title = task.title.length > 8 ? task.title.substring(0, 8) + "..." : task.title;
-        ctx.fillText(title, node.x, node.y);
-        // Full title on hover (simplified - just show below node)
-        if (isSelected) {
-            ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--background-primary");
-            const textWidth = ctx.measureText(task.title).width + 10;
-            ctx.fillRect(node.x - textWidth / 2, node.y + 40, textWidth, 20);
-            ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--text-normal");
-            ctx.fillText(task.title, node.x, node.y + 50);
-        }
-    }
-    resetLayout() {
-        const tasks = this.getAllTasks();
-        this.buildGraph(tasks);
-        this.startSimulation();
     }
 }
 
@@ -11277,7 +10826,6 @@ const ZH = {
     "Grid": "任务表",
     "Board": "看板",
     "Timeline": "时间线",
-    "Graph": "依赖关系图",
     "Add Task": "添加任务",
     "New Task": "新建任务",
     "Columns": "列设置",
@@ -11550,11 +11098,6 @@ class ProjectPlannerPlugin extends obsidian.Plugin {
                 await this.activateBoardView();
             });
         }
-        if (this.settings.showRibbonIconGraph) {
-            this.addRibbonIcon("git-fork", "Open Dependency Graph", async () => {
-                await this.openDependencyGraph();
-            });
-        }
         // Add ribbon icon for daily note scanning (if enabled in both settings)
         if (this.settings.enableDailyNoteSync && this.settings.showRibbonIconDailyNoteScan) {
             this.addRibbonIcon("scan", "Scan Daily Notes for Tasks", async () => {
@@ -11572,8 +11115,6 @@ class ProjectPlannerPlugin extends obsidian.Plugin {
         this.registerView(VIEW_TYPE_BOARD, (leaf) => new BoardView(leaf, this));
         // Register right-side Task Detail Panel
         this.registerView(VIEW_TYPE_TASK_DETAIL, (leaf) => new TaskDetailView(leaf, this));
-        // Register Dependency Graph View
-        this.registerView(VIEW_TYPE_DEPENDENCY_GRAPH, (leaf) => new DependencyGraphView(leaf, this));
         // Register Gantt View (Timeline)
         this.registerView(VIEW_TYPE_GANTT, (leaf) => new GanttView(leaf, this));
         // Register Dashboard View
@@ -11592,12 +11133,6 @@ class ProjectPlannerPlugin extends obsidian.Plugin {
             id: "open-board-view",
             name: "Open Board View",
             callback: async () => await this.activateBoardView(),
-        });
-        // Command: Open Dependency Graph
-        this.addCommand({
-            id: "open-dependency-graph",
-            name: "Open Dependency Graph",
-            callback: async () => await this.openDependencyGraph(),
         });
         // Command: Open Timeline (Gantt)
         this.addCommand({
@@ -11852,12 +11387,6 @@ class ProjectPlannerPlugin extends obsidian.Plugin {
             return;
         this.settings.activeProjectId = projectId;
         void this.saveSettings();
-    }
-    // ---------------------------------------------------------------------------
-    // Open Dependency Graph View
-    // ---------------------------------------------------------------------------
-    async openDependencyGraph() {
-        await this.openViewByType(VIEW_TYPE_DEPENDENCY_GRAPH);
     }
     // ---------------------------------------------------------------------------
     // Open Task by ID (from URI link)

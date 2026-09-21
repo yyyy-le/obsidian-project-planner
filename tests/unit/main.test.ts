@@ -10,7 +10,6 @@ import { FileSystemAdapter } from 'obsidian';
 jest.mock('../../src/ui/GridView');
 jest.mock('../../src/ui/BoardView');
 jest.mock('../../src/ui/TaskDetailView');
-jest.mock('../../src/ui/DependencyGraphView');
 jest.mock('../../src/ui/GanttView');
 jest.mock('../../src/ui/DashboardView');
 jest.mock('../../src/stores/taskStore');
@@ -346,20 +345,6 @@ describe('ProjectPlannerPlugin', () => {
             );
         });
 
-        it('should open dependency graph', async () => {
-            const mockLeaf = {
-                setViewState: jest.fn().mockResolvedValue(undefined),
-            };
-            mockApp.workspace.getMostRecentLeaf.mockReturnValue(mockLeaf);
-
-            await plugin.openDependencyGraph();
-
-            expect(mockLeaf.setViewState).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    type: 'project-planner-dependency-graph',
-                })
-            );
-        });
     });
 
     describe('Task Detail View', () => {

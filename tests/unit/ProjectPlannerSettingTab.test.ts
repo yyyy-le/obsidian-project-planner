@@ -222,7 +222,6 @@ describe('ProjectPlannerSettingTab', () => {
             dailyNoteScanner: {
                 scanAllNotes: jest.fn(),
             },
-            openDependencyGraph: jest.fn(),
             createTaskNotes: jest.fn(),
         };
 
@@ -644,19 +643,6 @@ describe('ProjectPlannerSettingTab', () => {
     describe('Actions', () => {
         beforeEach(() => {
             settingTab.display();
-        });
-
-        it('should open dependency graph', async () => {
-            const settingInstances = (Setting as jest.Mock).mock.instances;
-            const graphSetting = settingInstances.find((s: any) => 
-                s._buttonHandler && s.setName.mock.calls.some((call: any) => call[0] === 'Open dependency graph')
-            );
-            
-            if (graphSetting?._buttonHandler) {
-                await graphSetting._buttonHandler();
-            }
-            
-            expect(mockPlugin.openDependencyGraph).toHaveBeenCalled();
         });
 
         it('should create task notes', async () => {

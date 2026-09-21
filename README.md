@@ -16,7 +16,6 @@ A full-featured project planner for [Obsidian](https://obidian.md) based on [Mic
 - **Board View** — Kanban board with custom buckets, drag-and-drop cards, and collapsible completed sections
 - **Timeline View** — Gantt-style chart with resizable task bars, dependency arrows (FS/SS/FF/SF), and synchronized scrolling
 - **Dashboard** — Project KPIs, completion progress, priority/due-date alerts, effort summary, and budget/cost cards
-- **Dependency Graph** — Interactive node-based visualization of task dependencies with HiDPI canvas rendering
 - **My Tasks** — Cross-project aggregation of tasks due today (table mode) or this week (Outlook-style 7-day column layout)
 
 ### Task Management

@@ -1,7 +1,7 @@
 import type ProjectPlannerPlugin from "../main";
 import { App, setIcon } from "obsidian";
 
-type ActiveView = "grid" | "board" | "graph" | "gantt" | "dashboard" | "myday" | "documents";
+type ActiveView = "grid" | "board" | "gantt" | "dashboard" | "myday" | "documents";
 
 export interface HeaderOptions {
     active: ActiveView;
@@ -90,13 +90,6 @@ export function renderPlannerHeader(
     });
     setIcon(ganttViewBtn, "calendar-range");
     ganttViewBtn.onclick = async () => await plugin.activateGanttView();
-
-    const graphViewBtn = viewSwitcher.createEl("button", {
-        cls: `planner-view-btn${options.active === "graph" ? " planner-view-btn-active" : ""}`,
-        title: "Graph",
-    });
-    setIcon(graphViewBtn, "git-fork");
-    graphViewBtn.onclick = async () => await plugin.openDependencyGraph();
 
     const documentsViewBtn = viewSwitcher.createEl("button", {
         cls: `planner-view-btn${options.active === "documents" ? " planner-view-btn-active" : ""}`,

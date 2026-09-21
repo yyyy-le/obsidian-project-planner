@@ -141,7 +141,6 @@ export interface ProjectPlannerSettings {
   showRibbonIconGrid: boolean; // Show ribbon icon for Grid view
   showRibbonIconDashboard: boolean; // Show ribbon icon for Dashboard view
   showRibbonIconBoard: boolean; // Show ribbon icon for Board view
-  showRibbonIconGraph: boolean; // Show ribbon icon for Dependency Graph view
   showRibbonIconDailyNoteScan: boolean; // Show ribbon icon for Daily Note scanning
   showRibbonIconMyTasks: boolean; // Show ribbon icon for My Tasks view
 
@@ -188,7 +187,6 @@ export const DEFAULT_SETTINGS: ProjectPlannerSettings = {
   showRibbonIconGrid: true,
   showRibbonIconDashboard: false,
   showRibbonIconBoard: false,
-  showRibbonIconGraph: false,
   showRibbonIconDailyNoteScan: false,
   showRibbonIconMyTasks: false,
   myDayDefaultView: "today",
@@ -538,18 +536,6 @@ export class ProjectPlannerSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Dependency Graph icon")
-      .setDesc("Show ribbon icon for opening Dependency Graph view")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.showRibbonIconGraph)
-          .onChange(async (value) => {
-            this.plugin.settings.showRibbonIconGraph = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
       .setName("Daily Note scan icon")
       .setDesc("Show ribbon icon for scanning daily notes (only visible when daily note sync is enabled)")
       .addToggle((toggle) =>
@@ -798,18 +784,6 @@ export class ProjectPlannerSettingTab extends PluginSettingTab {
     // Actions Section
     // -----------------------------------------------------------------------
     new Setting(containerEl).setName("Actions").setHeading();
-
-    new Setting(containerEl)
-      .setName("Open dependency graph")
-      .setDesc("Visualize task dependencies in an interactive graph view")
-      .addButton((btn) => {
-        btn
-          .setButtonText("Open graph")
-          .setCta()
-          .onClick(async () => {
-            await this.plugin.openDependencyGraph();
-          });
-      });
 
     new Setting(containerEl)
       .setName("Create task notes")

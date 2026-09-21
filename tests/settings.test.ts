@@ -111,10 +111,6 @@ describe("Settings", () => {
             expect(DEFAULT_SETTINGS.showRibbonIconBoard).toBe(false);
         });
 
-        it("should not show Graph ribbon icon by default", () => {
-            expect(DEFAULT_SETTINGS.showRibbonIconGraph).toBe(false);
-        });
-
         it("should not show Daily Note Scan ribbon icon by default", () => {
             expect(DEFAULT_SETTINGS.showRibbonIconDailyNoteScan).toBe(false);
         });

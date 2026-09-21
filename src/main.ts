@@ -9,7 +9,6 @@ import {
 import { GridView } from "./ui/GridView";
 import { BoardView, VIEW_TYPE_BOARD } from "./ui/BoardView";
 import { TaskDetailView, VIEW_TYPE_TASK_DETAIL } from "./ui/TaskDetailView";
-import { DependencyGraphView, VIEW_TYPE_DEPENDENCY_GRAPH } from "./ui/DependencyGraphView";
 import { VIEW_TYPE_GANTT, GanttView } from "./ui/GanttView";
 import { DashboardView, VIEW_TYPE_DASHBOARD } from "./ui/DashboardView";
 import { MyDayView, VIEW_TYPE_MY_DAY } from "./ui/MyDayView";
@@ -92,12 +91,6 @@ export default class ProjectPlannerPlugin extends Plugin {
       });
     }
 
-    if (this.settings.showRibbonIconGraph) {
-      this.addRibbonIcon("git-fork", "Open Dependency Graph", async () => {
-        await this.openDependencyGraph();
-      });
-    }
-
     // Add ribbon icon for daily note scanning (if enabled in both settings)
     if (this.settings.enableDailyNoteSync && this.settings.showRibbonIconDailyNoteScan) {
       this.addRibbonIcon("scan", "Scan Daily Notes for Tasks", async () => {
@@ -127,12 +120,6 @@ export default class ProjectPlannerPlugin extends Plugin {
     this.registerView(
       VIEW_TYPE_TASK_DETAIL,
       (leaf: WorkspaceLeaf) => new TaskDetailView(leaf, this)
-    );
-
-    // Register Dependency Graph View
-    this.registerView(
-      VIEW_TYPE_DEPENDENCY_GRAPH,
-      (leaf: WorkspaceLeaf) => new DependencyGraphView(leaf, this)
     );
 
     // Register Gantt View (Timeline)
@@ -170,13 +157,6 @@ export default class ProjectPlannerPlugin extends Plugin {
       id: "open-board-view",
       name: "Open Board View",
       callback: async () => await this.activateBoardView(),
-    });
-
-    // Command: Open Dependency Graph
-    this.addCommand({
-      id: "open-dependency-graph",
-      name: "Open Dependency Graph",
-      callback: async () => await this.openDependencyGraph(),
     });
 
     // Command: Open Timeline (Gantt)
@@ -481,13 +461,6 @@ export default class ProjectPlannerPlugin extends Plugin {
 
     this.settings.activeProjectId = projectId;
     void this.saveSettings();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Open Dependency Graph View
-  // ---------------------------------------------------------------------------
-  async openDependencyGraph() {
-    await this.openViewByType(VIEW_TYPE_DEPENDENCY_GRAPH);
   }
 
   // ---------------------------------------------------------------------------
