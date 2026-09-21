@@ -392,6 +392,55 @@ export class TaskStore {
     await this.save();
   }
 
+  /**
+   * Merge a markdown task into the project that owns its Tasks folder.
+   * Unlike addTaskFromObject(), this does not depend on the active project.
+   */
+  async addTaskFromObjectToProject(task: PlannerTask, projectId: string): Promise<void> {
+    if (!this.tasksByProject[projectId]) {
+      this.tasksByProject[projectId] = [];
+    }
+
+    const projectTasks = this.tasksByProject[projectId];
+    const existing = projectTasks.find(t => t.id === task.id);
+
+    if (existing) {
+      for (const key of Object.keys(task) as (keyof PlannerTask)[]) {
+        if (task[key] !== undefined) {
+          (existing[key] as PlannerTask[typeof key]) = task[key];
+        }
+      }
+    } else {
+      if (!task.createdDate) task.createdDate = getTodayDate();
+      if (!task.lastModifiedDate) task.lastModifiedDate = getTodayDate();
+      projectTasks.push(task);
+    }
+
+    this.tasksByProject[projectId] = projectTasks;
+    await this.writeProjectFile(projectId, projectTasks);
+
+    if (projectId === this.activeProjectId) {
+      this.tasks = projectTasks;
+      this.rebuildIndex();
+    }
+
+    this.emit();
+  }
+
+  /** Delete a markdown-backed task from its owning project, not the active project. */
+  async deleteTaskFromProject(id: string, projectId: string): Promise<void> {
+    const projectTasks = this.tasksByProject[projectId] || [];
+    this.tasksByProject[projectId] = projectTasks.filter(t => t.id !== id);
+    await this.writeProjectFile(projectId, this.tasksByProject[projectId]);
+
+    if (projectId === this.activeProjectId) {
+      this.tasks = this.tasksByProject[projectId];
+      this.rebuildIndex();
+    }
+
+    this.emit();
+  }
+
   async addTaskToProject(task: PlannerTask, projectId: string): Promise<void> {
     // Ensure project bucket exists
     if (!this.tasksByProject[projectId]) {

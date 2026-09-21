@@ -370,7 +370,8 @@ export class TaskSync {
         this.syncInProgress.add(task.id);
 
         try {
-            const existingTask = this.plugin.taskStore.getTaskById(task.id);
+            const existingTask = (this.plugin.taskStore.getAllForProject(projectId) || [])
+                .find(candidate => candidate.id === task.id);
 
             if (existingTask) {
                 // Check if title changed in markdown - if so, rename the file
@@ -379,7 +380,7 @@ export class TaskSync {
                 // Update existing task (always update to ensure markdown is source of truth)
                 // Don't use updateTask as it triggers lastModifiedDate change
                 // Instead use addTaskFromObject which handles merging
-                await this.plugin.taskStore.addTaskFromObject(task);
+                await this.plugin.taskStore.addTaskFromObjectToProject(task, projectId);
                 
                 // If title changed, rename the markdown file to match new title
                 if (titleChanged) {
@@ -399,7 +400,7 @@ export class TaskSync {
                 }
             } else {
                 // Task doesn't exist in JSON - new task created via markdown
-                await this.plugin.taskStore.addTaskFromObject(task);
+                await this.plugin.taskStore.addTaskFromObjectToProject(task, projectId);
             }
         } finally {
             // Longer timeout for Obsidian Sync delays
@@ -462,7 +463,7 @@ export class TaskSync {
                     const taskId = taskIdByPath.get(file.path);
                     if (taskId) {
                         taskIdByPath.delete(file.path);
-                        await this.plugin.taskStore.deleteTask(taskId);
+                        await this.plugin.taskStore.deleteTaskFromProject(taskId, projectId);
                     }
                 }
             })

@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS = {
     defaultTaskStatus: "",
     openLinksInNewTab: false,
     openViewsInNewTab: false,
+    showCostFeatures: false,
     availableTags: [],
     availableStatuses: [
         { id: "not-started", name: "Not Started", color: "#6c757d" },
@@ -160,11 +161,21 @@ class ProjectPlannerSettingTab extends obsidian.PluginSettingTab {
                 });
             });
         });
+        new obsidian.Setting(containerEl)
+            .setName("显示成本与预算功能")
+            .setDesc("默认关闭。仅在需要管理项目预算、费率和实际成本时开启。")
+            .addToggle((toggle) => toggle
+            .setValue(this.plugin.settings.showCostFeatures)
+            .onChange(async (value) => {
+            this.plugin.settings.showCostFeatures = value;
+            await this.plugin.saveSettings();
+            this.display();
+        }));
         // -----------------------------------------------------------------
-        // Cost Tracking — per-project budget, rate, and currency settings
+        // Cost Tracking — optional per-project budget, rate, and currency
         // -----------------------------------------------------------------
         const activeProject = this.plugin.settings.projects.find(p => p.id === this.plugin.settings.activeProjectId);
-        if (activeProject) {
+        if (activeProject && this.plugin.settings.showCostFeatures) {
             containerEl.createEl("h3", { text: `Cost Tracking — ${activeProject.name}` });
             new obsidian.Setting(containerEl)
                 .setName("Total Budget")
@@ -858,6 +869,12 @@ function renderPlannerHeader(parent, plugin, options) {
     });
     obsidian.setIcon(graphViewBtn, "git-fork");
     graphViewBtn.onclick = async () => await plugin.openDependencyGraph();
+    const documentsViewBtn = viewSwitcher.createEl("button", {
+        cls: `planner-view-btn${options.active === "documents" ? " planner-view-btn-active" : ""}`,
+        title: "项目文档",
+    });
+    obsidian.setIcon(documentsViewBtn, "folder-tree");
+    documentsViewBtn.onclick = async () => await plugin.activateDocumentsView();
     // Header actions (Add task, extra, Project Hub, Settings)
     const headerActions = header.createDiv("planner-header-actions");
     if (!options.hideAddTask) {
@@ -1012,6 +1029,7 @@ function getCostBreakdown(tasks, groupFn, project) {
 
 const GRID_VIEW_ICON = "layout-grid";
 const NON_HIDEABLE_COLUMNS = new Set(["drag", "number", "check"]);
+const DEFAULT_HIDDEN_COLUMNS = new Set(["created", "modified"]);
 class GridView extends obsidian.ItemView {
     constructor(leaf, plugin) {
         super(leaf);
@@ -2785,9 +2803,10 @@ class GridView extends obsidian.ItemView {
             { key: "effortRemaining", label: "Effort Left", hideable: true, reorderable: true },
             { key: "effortTotal", label: "Effort Total", hideable: true, reorderable: true },
             { key: "duration", label: "Duration", hideable: true, reorderable: true },
-            { key: "costEstimate", label: "Est. Cost", hideable: true, reorderable: true },
-            { key: "costActual", label: "Actual Cost", hideable: true, reorderable: true },
         ];
+        if (this.plugin.settings.showCostFeatures) {
+            allColumns.push({ key: "costEstimate", label: "Est. Cost", hideable: true, reorderable: true }, { key: "costActual", label: "Actual Cost", hideable: true, reorderable: true });
+        }
         // Apply custom column order if available
         if (this.columnOrder.length > 0) {
             // Separate non-reorderable columns (drag, number, check)
@@ -2997,7 +3016,7 @@ class GridView extends obsidian.ItemView {
                 this.columnVisibility[col.key] = true;
             }
             else if (this.columnVisibility[col.key] === undefined) {
-                this.columnVisibility[col.key] = true;
+                this.columnVisibility[col.key] = !DEFAULT_HIDDEN_COLUMNS.has(col.key);
             }
         });
         // Always use Manual sort for drag and drop - ignore saved sortKey
@@ -4456,6 +4475,22 @@ class TaskDetailView extends obsidian.ItemView {
         this.createEditableMarkdown(container, task.description || "", async (val) => {
             await this.update({ description: val });
         });
+        // Keep project documents near the top: clicking a task should immediately
+        // reveal its evidence, deliverables, meeting notes, and reference files.
+        const documentsSection = container.createDiv("planner-documents-section");
+        const documentsHeader = documentsSection.createDiv("planner-documents-header");
+        const documentsTitle = documentsHeader.createDiv("planner-documents-title");
+        obsidian.setIcon(documentsTitle.createSpan("planner-documents-title-icon"), "folder-open");
+        documentsTitle.createSpan({ text: "关联文档" });
+        documentsHeader.createSpan({
+            text: `${task.links?.length ?? 0} 个`,
+            cls: "planner-documents-count"
+        });
+        documentsSection.createDiv({
+            text: "会议纪要、需求、方案、表格和交付物都可以关联到这里。",
+            cls: "planner-documents-help"
+        });
+        this.renderLinks(documentsSection, task);
         //
         // PROJECT — dropdown (move task to another project)
         //
@@ -4625,17 +4660,14 @@ class TaskDetailView extends obsidian.ItemView {
         //
         // COST
         //
-        this.renderCostSection(container, task, isRolledUp);
+        if (this.plugin.settings.showCostFeatures) {
+            this.renderCostSection(container, task, isRolledUp);
+        }
         //
         // DEPENDENCIES
         //
         container.createEl("h3", { text: "Dependencies" });
         this.renderDependencies(container, task);
-        //
-        // LINKS / ATTACHMENTS
-        //
-        container.createEl("h3", { text: "Links & Attachments" });
-        this.renderLinks(container, task);
     }
     // ---------------------------------------------------------------------------
     // Subtasks
@@ -5119,7 +5151,7 @@ class TaskDetailView extends obsidian.ItemView {
                     // Obsidian internal link
                     linkEl.onclick = (e) => {
                         e.preventDefault();
-                        this.app.workspace.openLinkText(link.url, "", false);
+                        this.app.workspace.openLinkText(link.url, "", true);
                     };
                 }
                 else {
@@ -5146,7 +5178,7 @@ class TaskDetailView extends obsidian.ItemView {
             cls: "planner-link-title-input",
             attr: {
                 type: "text",
-                placeholder: "Link title"
+                placeholder: "文档名称"
             }
         });
         // Link URL input
@@ -5154,13 +5186,13 @@ class TaskDetailView extends obsidian.ItemView {
             cls: "planner-link-url-input",
             attr: {
                 type: "text",
-                placeholder: "URL or [[Obsidian Link]]"
+                placeholder: "[[Obsidian 文档]] 或网址"
             }
         });
         // Add button
         const addBtn = addLinkDiv.createEl("button", {
             cls: "planner-link-add-btn",
-            text: "Add Link"
+            text: "添加文档"
         });
         addBtn.onclick = async () => {
             const title = titleInput.value.trim();
@@ -5192,7 +5224,7 @@ class TaskDetailView extends obsidian.ItemView {
         // Add hint text
         const hintDiv = linkContainer.createDiv("planner-link-hint");
         hintDiv.createEl("small", {
-            text: "Tip: Use [[Page Name]] for Obsidian links or http(s):// for external links",
+            text: "提示：内部文档使用 [[文档名称]]，也可以粘贴外部网址。",
             cls: "planner-link-hint-text"
         });
     }
@@ -5982,12 +6014,13 @@ class GanttView extends obsidian.ItemView {
             priority: "All",
             search: ""
         };
-        // Zoom level
-        this.zoomLevel = "day";
+        // Gantt only needs weekly and monthly planning ranges.
+        this.ganttRange = "week";
+        this.rangeAnchorDate = null;
         // Clipboard for Cut/Copy/Paste
         this.clipboardTask = null;
         // Dependency arrows toggle
-        this.showDependencyArrows = true;
+        this.showDependencyArrows = false;
         // Scroll preservation
         this.savedLeftScrollTop = null;
         this.savedRightScrollTop = null;
@@ -6583,7 +6616,8 @@ class GanttView extends obsidian.ItemView {
         menu.showAtMouseEvent(evt);
     }
     scrollToDate(targetDate) {
-        // Store target date and re-render (the render will handle scrolling)
+        targetDate.setHours(0, 0, 0, 0);
+        this.rangeAnchorDate = new Date(targetDate);
         this.scrollTargetDate = targetDate;
         this.render();
     }
@@ -6777,19 +6811,20 @@ class GanttView extends obsidian.ItemView {
             this.render();
         };
         updateClearButtonVisibility();
-        // Zoom controls
-        const zoomControls = toolbar.createDiv("planner-gantt-zoom");
-        zoomControls.createSpan({ text: "Zoom: ", cls: "planner-zoom-label" });
-        const zoomBtnGroup = zoomControls.createDiv("planner-zoom-buttons");
-        ["day", "week", "month"].forEach((level) => {
-            const btn = zoomBtnGroup.createEl("button", {
-                text: level.charAt(0).toUpperCase() + level.slice(1),
-                cls: "planner-zoom-btn"
+        // Calendar range: the Gantt view intentionally offers only week/month.
+        const rangeControls = toolbar.createDiv("planner-gantt-zoom");
+        rangeControls.createSpan({ cls: "planner-filter-label", text: "范围：" });
+        const rangeButtonGroup = rangeControls.createDiv("planner-zoom-buttons");
+        [
+            { value: "week", label: "本周" },
+            { value: "month", label: "本月" },
+        ].forEach(({ value, label }) => {
+            const button = rangeButtonGroup.createEl("button", {
+                text: label,
+                cls: `planner-zoom-btn${this.ganttRange === value ? " active" : ""}`,
             });
-            if (level === this.zoomLevel)
-                btn.classList.add("active");
-            btn.onclick = () => {
-                this.zoomLevel = level;
+            button.onclick = () => {
+                this.ganttRange = value;
                 this.render();
             };
         });
@@ -6806,19 +6841,54 @@ class GanttView extends obsidian.ItemView {
         const depArrowBtn = toolbar.createEl("button", {
             cls: `planner-dep-arrow-btn${this.showDependencyArrows ? " active" : ""}`,
         });
-        obsidian.setIcon(depArrowBtn, "arrow-right");
-        depArrowBtn.setAttribute("title", this.showDependencyArrows ? "Hide dependency arrows" : "Show dependency arrows");
+        obsidian.setIcon(depArrowBtn, "workflow");
+        depArrowBtn.setAttribute("title", this.showDependencyArrows ? "隐藏任务依赖线" : "显示任务依赖线");
         depArrowBtn.onclick = () => {
             this.showDependencyArrows = !this.showDependencyArrows;
             this.render();
         };
+        // Status legend: make bar colours understandable without guessing.
+        const legend = container.createDiv("planner-gantt-legend");
+        [
+            { label: "未开始", color: "#7A8491" },
+            { label: "进行中", color: "#3B6FD8" },
+            { label: "临近截止", color: "#D9902F" },
+            { label: "已阻塞", color: "#C2414B" },
+            { label: "已完成", color: "#2E7D5B" },
+        ].forEach(({ label, color }) => {
+            const item = legend.createDiv("planner-gantt-legend-item");
+            const swatch = item.createSpan("planner-gantt-legend-swatch");
+            swatch.style.backgroundColor = color;
+            item.createSpan({ text: label });
+        });
         // Content area
         const content = container.createDiv("planner-gantt-content");
         const allTasks = this.plugin.taskStore.getAll();
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const anchorDate = new Date(this.rangeAnchorDate ?? today);
+        anchorDate.setHours(0, 0, 0, 0);
+        const viewStart = new Date(anchorDate);
+        const viewEnd = new Date(anchorDate);
+        if (this.ganttRange === "week") {
+            const daysSinceMonday = (anchorDate.getDay() + 6) % 7;
+            viewStart.setDate(anchorDate.getDate() - daysSinceMonday);
+            viewEnd.setTime(viewStart.getTime());
+            viewEnd.setDate(viewStart.getDate() + 6);
+        }
+        else {
+            viewStart.setDate(1);
+            viewEnd.setMonth(viewStart.getMonth() + 1, 0);
+        }
+        const viewStartTime = viewStart.getTime();
+        const viewEndTime = viewEnd.getTime();
         // Build hierarchical task list with filters
         const matchesFilter = new Map();
         for (const t of allTasks) {
-            matchesFilter.set(t.id, this.matchesFilters(t));
+            const isScheduled = Boolean(t.startDate || t.dueDate);
+            const range = this.getTaskRange(t, viewStartTime);
+            const overlapsSelectedRange = range.end >= viewStartTime && range.start <= viewEndTime;
+            matchesFilter.set(t.id, this.matchesFilters(t) && isScheduled && overlapsSelectedRange);
         }
         // Build visible task hierarchy
         const visibleTasks = [];
@@ -6846,56 +6916,21 @@ class GanttView extends obsidian.ItemView {
             addTaskAndChildren(root, 0);
         }
         if (visibleTasks.length === 0) {
-            content.createEl("div", { text: "No tasks match current filters." });
+            content.createEl("div", {
+                text: this.ganttRange === "week" ? "本周没有已排期任务。" : "本月没有已排期任务。",
+            });
             return;
         }
-        // Determine timeline range from all visible tasks
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const ranges = visibleTasks.map((vt) => this.getTaskRange(vt.task, today.getTime()));
-        const dates = [];
-        for (const r of ranges) {
-            dates.push(r.start, r.end);
-        }
-        let minTime = dates.length ? Math.min(...dates) : today.getTime();
-        let maxTime = dates.length ? Math.max(...dates) : today.getTime() + 30 * this.dayMs;
-        // Ensure at least 30 days span
-        if (maxTime - minTime < 30 * this.dayMs)
-            maxTime = minTime + 30 * this.dayMs;
-        // Build scale with zoom-based day width
+        const ranges = visibleTasks.map((vt) => this.getTaskRange(vt.task, viewStartTime));
+        const minTime = viewStartTime;
+        const maxTime = viewEndTime;
+        // Fit the full project range to the available viewport where possible.
         const dayMs = this.dayMs;
-        let dayWidth = 20; // px per day (default)
-        if (this.zoomLevel === "week")
-            dayWidth = 8;
-        else if (this.zoomLevel === "month")
-            dayWidth = 3;
-        // Calculate available width for timeline
         const containerWidth = this.containerEl.clientWidth;
-        const minTimelineWidth = containerWidth - this.leftColumnWidth - 50;
-        // Always add substantial padding for scrollable timeline
-        // More padding at higher zoom levels to ensure scrollability
-        const paddingMultiplier = this.zoomLevel === "month" ? 90 : this.zoomLevel === "week" ? 60 : 30;
-        minTime -= paddingMultiplier * dayMs;
-        maxTime += paddingMultiplier * dayMs;
-        // Normalize minTime and maxTime to midnight to ensure proper date alignment
-        const minDate = new Date(minTime);
-        minDate.setHours(0, 0, 0, 0);
-        minTime = minDate.getTime();
-        const maxDate = new Date(maxTime);
-        maxDate.setHours(0, 0, 0, 0);
-        maxTime = maxDate.getTime();
-        // Calculate total days and timeline width
-        let totalDays = Math.floor((maxTime - minTime) / dayMs) + 1;
-        let timelineWidth = totalDays * dayWidth;
-        // If timeline is still narrower than viewport, extend the date range further
-        if (timelineWidth < minTimelineWidth) {
-            const additionalDays = Math.ceil((minTimelineWidth - timelineWidth) / dayWidth) + 60; // Extra 60 days for scrolling
-            const daysAfter = additionalDays;
-            maxTime += daysAfter * dayMs;
-            // Recalculate totalDays after extending maxTime
-            totalDays = Math.floor((maxTime - minTime) / dayMs) + 1;
-            timelineWidth = totalDays * dayWidth;
-        }
+        const minTimelineWidth = Math.max(320, containerWidth - this.leftColumnWidth - 50);
+        const totalDays = Math.floor((maxTime - minTime) / dayMs) + 1;
+        const dayWidth = Math.max(24, Math.floor(minTimelineWidth / totalDays));
+        const timelineWidth = Math.max(minTimelineWidth, totalDays * dayWidth);
         const finalTimelineWidth = timelineWidth; // Use actual timeline width, not clamped to minimum
         // Layout containers: left list + right timeline
         const layout = content.createDiv("planner-gantt-layout");
@@ -6973,32 +7008,19 @@ class GanttView extends obsidian.ItemView {
         monthGroups.forEach(({ count, date }) => {
             const monthCell = monthRow.createDiv("planner-gantt-month-header");
             monthCell.style.width = `${count * dayWidth}px`;
-            const monthText = date.toLocaleString(undefined, { month: 'short', year: 'numeric' });
-            monthCell.setText(monthText);
+            const monthText = `${date.getFullYear()}年${date.getMonth() + 1}月`;
+            monthCell.createSpan({ text: monthText, cls: "planner-gantt-month-label" });
         });
         // Render day/week cells based on zoom level
         for (let i = 0; i < totalDays; i++) {
             const date = new Date(minTime + i * dayMs);
             const dayCell = dayRow.createDiv("planner-gantt-day-cell");
             dayCell.style.width = `${dayWidth}px`;
-            if (this.zoomLevel === "day") {
-                // Show day number on Mondays or 1st of month
-                if (date.getDay() === 1 || date.getDate() === 1) {
-                    dayCell.setText(`${date.getDate()}`);
-                }
-            }
-            else if (this.zoomLevel === "week") {
-                // Show week start dates (Mondays)
-                if (date.getDay() === 1) {
-                    dayCell.setText(`${date.getDate()}`);
+            // A week shows all seven dates; a month uses weekly markers.
+            if (this.ganttRange === "week" || i === 0 || date.getDay() === 1 || date.getDate() === 1) {
+                dayCell.setText(`${date.getMonth() + 1}/${date.getDate()}`);
+                if (date.getDay() === 1)
                     dayCell.classList.add("planner-gantt-week-marker");
-                }
-            }
-            else if (this.zoomLevel === "month") {
-                // Show day 1 and 15 for month view
-                if (date.getDate() === 1 || date.getDate() === 15) {
-                    dayCell.setText(`${date.getDate()}`);
-                }
             }
         }
         // Today marker
@@ -7014,17 +7036,20 @@ class GanttView extends obsidian.ItemView {
         const statusColor = (status, task) => {
             if (status !== "Completed" && task.dueDate && approachingMs > 0) {
                 const [y, m, d] = task.dueDate.split("-").map(Number);
-                const dueMs = new Date(y, m - 1, d).getTime();
+                // A date-only deadline remains valid through the end of that day.
+                // Using midnight made a task due today stop appearing amber as
+                // soon as the workday began.
+                const dueMs = new Date(y, m - 1, d, 23, 59, 59, 999).getTime();
                 if (dueMs >= nowMs && dueMs - nowMs <= approachingMs) {
-                    return "#f59e0b"; // amber — approaching due date
+                    return "#D9902F"; // amber — approaching due date
                 }
             }
             switch (status) {
-                case "Completed": return "#2f9e44";
-                case "In Progress": return "#0a84ff";
-                case "Blocked": return "#d70022";
+                case "Completed": return "#2E7D5B";
+                case "In Progress": return "#3B6FD8";
+                case "Blocked": return "#C2414B";
                 case "Not Started":
-                default: return "#6c757d";
+                default: return "#7A8491";
             }
         };
         visibleTasks.forEach((vt, idx) => {
@@ -7815,7 +7840,7 @@ class DashboardView extends obsidian.ItemView {
         }
         // Cost / Budget section (show if any tasks have cost data or budget is set)
         const hasCostData = stats.totalEstimatedCost > 0 || stats.totalActualCost > 0 || stats.budgetTotal > 0;
-        if (hasCostData) {
+        if (this.plugin.settings.showCostFeatures && hasCostData) {
             const activeProj = this.plugin.settings.projects?.find(p => p.id === stats.projectId);
             const currency = activeProj?.currencySymbol || "$";
             const costSection = projectCard.createDiv("dashboard-section");
@@ -8989,6 +9014,385 @@ class MyDayView extends obsidian.ItemView {
     }
 }
 
+const VIEW_TYPE_PROJECT_DOCUMENTS = "project-planner-documents-view";
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
+const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "mkv", "webm", "avi", "m4v"]);
+const AUDIO_EXTENSIONS = new Set(["mp3", "wav", "m4a", "aac", "flac", "ogg"]);
+const MAX_RENDERED_ROWS = 3000;
+class DocumentRootModal extends obsidian.Modal {
+    constructor(plugin, project, onSaved) {
+        super(plugin.app);
+        this.plugin = plugin;
+        this.project = project;
+        this.onSaved = onSaved;
+    }
+    onOpen() {
+        this.setTitle("设置项目文档目录");
+        let value = this.project.documentRootPath ?? "";
+        new obsidian.Setting(this.contentEl)
+            .setName("项目目录")
+            .setDesc("填写相对于 Obsidian 仓库根目录的文件夹路径，例如：professional/10-进行中项目/客从何处来")
+            .addText((text) => {
+            text.setPlaceholder("professional/项目名称");
+            text.setValue(value);
+            text.onChange((next) => { value = next.trim(); });
+            text.inputEl.style.width = "100%";
+        });
+        const actions = this.contentEl.createDiv("planner-docs-modal-actions");
+        const cancel = actions.createEl("button", { text: "取消" });
+        cancel.onclick = () => this.close();
+        const save = actions.createEl("button", { text: "保存", cls: "mod-cta" });
+        save.onclick = async () => {
+            const path = obsidian.normalizePath(value.replace(/^\/+|\/+$/g, ""));
+            const item = path ? this.app.vault.getAbstractFileByPath(path) : null;
+            if (!path || !(item instanceof obsidian.TFolder)) {
+                new obsidian.Notice("没有找到这个文件夹，请填写仓库内已有文件夹的相对路径。");
+                return;
+            }
+            this.project.documentRootPath = path;
+            await this.plugin.saveSettings();
+            this.close();
+            this.onSaved();
+        };
+    }
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+class ProjectDocumentsView extends obsidian.ItemView {
+    constructor(leaf, plugin) {
+        super(leaf);
+        this.plugin = plugin;
+        this.filter = "all";
+        this.query = "";
+        this.nestedCounts = true;
+        this.expandedPaths = new Set();
+        this.expandDepth = 0;
+        this.pinnedRootPath = null;
+        this.mediaMode = false;
+    }
+    getViewType() { return VIEW_TYPE_PROJECT_DOCUMENTS; }
+    getDisplayText() { return "项目文档"; }
+    getIcon() { return "folder-tree"; }
+    async onOpen() { this.render(); }
+    getActiveProject() {
+        return this.plugin.settings.projects.find((p) => p.id === this.plugin.settings.activeProjectId) ?? null;
+    }
+    getConfiguredRoot(project) {
+        const configured = project.documentRootPath;
+        if (configured) {
+            const item = this.app.vault.getAbstractFileByPath(obsidian.normalizePath(configured));
+            if (item instanceof obsidian.TFolder)
+                return item;
+        }
+        const base = (this.plugin.settings.projectsBasePath || "Project Planner").trim();
+        const fallback = obsidian.normalizePath(`${base}/${project.storageKey ?? project.name}`);
+        const item = this.app.vault.getAbstractFileByPath(fallback);
+        return item instanceof obsidian.TFolder ? item : null;
+    }
+    getDisplayRoot(projectRoot) {
+        if (!this.pinnedRootPath)
+            return projectRoot;
+        const item = this.app.vault.getAbstractFileByPath(this.pinnedRootPath);
+        if (item instanceof obsidian.TFolder && (item.path === projectRoot.path || item.path.startsWith(`${projectRoot.path}/`))) {
+            return item;
+        }
+        this.pinnedRootPath = null;
+        return projectRoot;
+    }
+    classify(file) {
+        const ext = file.extension.toLowerCase();
+        if (ext === "md")
+            return "markdown";
+        if (ext === "pdf")
+            return "pdf";
+        if (IMAGE_EXTENSIONS.has(ext))
+            return "image";
+        if (VIDEO_EXTENSIONS.has(ext))
+            return "video";
+        if (AUDIO_EXTENSIONS.has(ext))
+            return "audio";
+        return "other";
+    }
+    fileMatches(file) {
+        if (this.filter !== "all" && this.classify(file) !== this.filter)
+            return false;
+        const q = this.query.trim().toLocaleLowerCase();
+        return !q || file.path.toLocaleLowerCase().includes(q);
+    }
+    filesUnder(folder) {
+        const prefix = `${folder.path}/`;
+        return this.app.vault.getFiles().filter((f) => f.path.startsWith(prefix) && this.fileMatches(f));
+    }
+    directCount(folder) {
+        return {
+            folders: folder.children.filter((c) => c instanceof obsidian.TFolder).length,
+            files: folder.children.filter((c) => c instanceof obsidian.TFile && this.fileMatches(c)).length,
+        };
+    }
+    nestedCount(folder) {
+        let folders = 0;
+        let files = 0;
+        const walk = (current) => {
+            for (const child of current.children) {
+                if (child instanceof obsidian.TFolder) {
+                    folders++;
+                    walk(child);
+                }
+                else if (child instanceof obsidian.TFile && this.fileMatches(child)) {
+                    files++;
+                }
+            }
+        };
+        walk(folder);
+        return { folders, files };
+    }
+    hasMatchingDescendant(folder) {
+        if (!this.query && this.filter === "all")
+            return true;
+        return this.filesUnder(folder).length > 0;
+    }
+    async openFile(file) {
+        await this.app.workspace.getLeaf("tab").openFile(file);
+    }
+    fileIcon(file) {
+        switch (this.classify(file)) {
+            case "markdown": return "file-text";
+            case "pdf": return "file-type-2";
+            case "image": return "image";
+            case "video": return "video";
+            case "audio": return "audio-lines";
+            default: return "file";
+        }
+    }
+    renderTree(host, root) {
+        let rendered = 0;
+        let truncated = false;
+        const columns = host.createDiv("planner-docs-tree-columns");
+        columns.createSpan({ text: "名称", cls: "planner-docs-column-name" });
+        columns.createSpan({ text: "内容数量", cls: "planner-docs-column-count" });
+        columns.createSpan({ text: "修改日期", cls: "planner-docs-column-date" });
+        columns.createSpan({ text: "固定", cls: "planner-docs-column-pin" });
+        const walk = (folder, depth) => {
+            if (rendered >= MAX_RENDERED_ROWS) {
+                truncated = true;
+                return;
+            }
+            const children = [...folder.children]
+                .filter((child) => child instanceof obsidian.TFile ? this.fileMatches(child) : this.hasMatchingDescendant(child))
+                .sort((a, b) => {
+                if (a instanceof obsidian.TFolder && b instanceof obsidian.TFile)
+                    return -1;
+                if (a instanceof obsidian.TFile && b instanceof obsidian.TFolder)
+                    return 1;
+                return a.name.localeCompare(b.name, "zh-CN", { numeric: true });
+            });
+            for (const child of children) {
+                if (rendered++ >= MAX_RENDERED_ROWS) {
+                    truncated = true;
+                    return;
+                }
+                if (child instanceof obsidian.TFolder) {
+                    const expanded = this.expandedPaths.has(child.path) || depth < this.expandDepth;
+                    const count = this.nestedCounts ? this.nestedCount(child) : this.directCount(child);
+                    const row = host.createDiv("planner-docs-tree-row planner-docs-folder-row");
+                    row.style.paddingLeft = `${12 + depth * 20}px`;
+                    const toggle = row.createEl("button", { cls: "planner-docs-tree-toggle", title: expanded ? "收起" : "展开" });
+                    obsidian.setIcon(toggle, expanded ? "chevron-down" : "chevron-right");
+                    const folderIcon = row.createSpan("planner-docs-tree-icon");
+                    obsidian.setIcon(folderIcon, expanded ? "folder-open" : "folder");
+                    row.createSpan({ text: child.name, cls: "planner-docs-tree-name" });
+                    row.createSpan({ text: `${count.folders} 个文件夹 · ${count.files} 个文件`, cls: "planner-docs-tree-count" });
+                    const pin = row.createEl("button", { cls: "planner-docs-pin", title: "固定为当前浏览根目录" });
+                    obsidian.setIcon(pin, "pin");
+                    pin.onclick = (event) => {
+                        event.stopPropagation();
+                        this.pinnedRootPath = child.path;
+                        this.expandedPaths.clear();
+                        this.render();
+                    };
+                    const toggleFolder = () => {
+                        if (expanded)
+                            this.expandedPaths.delete(child.path);
+                        else
+                            this.expandedPaths.add(child.path);
+                        this.render();
+                    };
+                    toggle.onclick = (event) => { event.stopPropagation(); toggleFolder(); };
+                    row.onclick = toggleFolder;
+                    if (expanded)
+                        walk(child, depth + 1);
+                }
+                else if (child instanceof obsidian.TFile) {
+                    const row = host.createDiv("planner-docs-tree-row planner-docs-file-row");
+                    row.style.paddingLeft = `${40 + depth * 20}px`;
+                    const icon = row.createSpan("planner-docs-tree-icon");
+                    obsidian.setIcon(icon, this.fileIcon(child));
+                    row.createSpan({ text: child.name, cls: "planner-docs-tree-name" });
+                    row.createSpan({ text: new Date(child.stat.mtime).toLocaleDateString("zh-CN"), cls: "planner-docs-tree-date" });
+                    row.onclick = () => void this.openFile(child);
+                }
+            }
+        };
+        walk(root, 0);
+        if (truncated) {
+            host.createDiv({
+                cls: "planner-docs-limit-notice",
+                text: `为保证页面流畅，目前最多显示 ${MAX_RENDERED_ROWS} 项。请固定较小的文件夹或使用搜索和类型筛选。`,
+            });
+        }
+    }
+    renderMedia(host, root) {
+        const files = this.filesUnder(root).filter((f) => ["image", "video", "audio", "pdf"].includes(this.classify(f)));
+        if (files.length === 0) {
+            host.createDiv({ cls: "planner-docs-empty", text: "当前范围内没有可预览的媒体附件。" });
+            return;
+        }
+        const grid = host.createDiv("planner-docs-media-grid");
+        files.slice(0, 500).forEach((file) => {
+            const card = grid.createDiv("planner-docs-media-card");
+            const preview = card.createDiv("planner-docs-media-preview");
+            if (this.classify(file) === "image") {
+                preview.createEl("img", { attr: { src: this.app.vault.getResourcePath(file), alt: file.name } });
+            }
+            else {
+                obsidian.setIcon(preview, this.fileIcon(file));
+            }
+            card.createDiv({ text: file.name, cls: "planner-docs-media-name" });
+            card.onclick = () => void this.openFile(file);
+        });
+        if (files.length > 500) {
+            host.createDiv({ cls: "planner-docs-limit-notice", text: `媒体较多，仅展示前 500 项；请使用搜索或文件类型筛选。` });
+        }
+    }
+    renderRecent(host, root) {
+        const recent = this.filesUnder(root).sort((a, b) => b.stat.mtime - a.stat.mtime).slice(0, 10);
+        const section = host.createDiv("planner-docs-recent");
+        section.createEl("h3", { text: "最近更新" });
+        if (recent.length === 0) {
+            section.createDiv({ text: "当前范围内没有文件。", cls: "planner-docs-empty" });
+            return;
+        }
+        recent.forEach((file) => {
+            const row = section.createDiv("planner-docs-recent-row");
+            const icon = row.createSpan("planner-docs-tree-icon");
+            obsidian.setIcon(icon, this.fileIcon(file));
+            row.createSpan({ text: file.name, cls: "planner-docs-recent-name" });
+            row.createSpan({ text: new Date(file.stat.mtime).toLocaleDateString("zh-CN"), cls: "planner-docs-tree-date" });
+            row.onclick = () => void this.openFile(file);
+        });
+    }
+    render() {
+        const container = this.containerEl.children[1];
+        container.empty();
+        container.addClass("planner-documents-wrapper");
+        renderPlannerHeader(container, this.plugin, {
+            active: "documents",
+            hideAddTask: true,
+            onProjectChange: () => {
+                this.pinnedRootPath = null;
+                this.expandedPaths.clear();
+                this.render();
+            },
+        });
+        const project = this.getActiveProject();
+        if (!project) {
+            container.createDiv({ cls: "planner-docs-empty", text: "请先创建或选择一个项目。" });
+            return;
+        }
+        const projectRoot = this.getConfiguredRoot(project);
+        if (!projectRoot) {
+            const empty = container.createDiv("planner-docs-setup");
+            empty.createEl("h2", { text: "尚未设置项目文档目录" });
+            empty.createEl("p", { text: "设置后，这里会以只读方式展示该项目每一层文件夹和文件。" });
+            const button = empty.createEl("button", { text: "设置项目目录", cls: "mod-cta" });
+            button.onclick = () => new DocumentRootModal(this.plugin, project, () => this.render()).open();
+            return;
+        }
+        const root = this.getDisplayRoot(projectRoot);
+        const allCounts = this.nestedCount(root);
+        const heading = container.createDiv("planner-docs-heading");
+        const headingText = heading.createDiv();
+        headingText.createEl("h2", { text: "项目文档中心" });
+        headingText.createDiv({ text: "查看当前项目的文件、文件夹与最近更新", cls: "planner-docs-subtitle" });
+        headingText.createDiv({ text: root.path, cls: "planner-docs-root-path" });
+        const headingActions = heading.createDiv("planner-docs-heading-actions");
+        if (this.pinnedRootPath) {
+            const resetRoot = headingActions.createEl("button", { text: "返回项目根目录" });
+            resetRoot.onclick = () => { this.pinnedRootPath = null; this.render(); };
+        }
+        const setRoot = headingActions.createEl("button", { text: "设置目录" });
+        setRoot.onclick = () => new DocumentRootModal(this.plugin, project, () => {
+            this.pinnedRootPath = null;
+            this.render();
+        }).open();
+        const toolbar = container.createDiv("planner-docs-toolbar");
+        const filter = toolbar.createEl("select", { cls: "planner-docs-filter" });
+        [
+            ["all", "全部附件"], ["markdown", "Markdown"], ["pdf", "PDF"],
+            ["image", "图片"], ["video", "视频"], ["audio", "音频"], ["other", "其他文件"],
+        ].forEach(([value, label]) => {
+            const option = filter.createEl("option", { value, text: label });
+            option.selected = this.filter === value;
+        });
+        filter.onchange = () => { this.filter = filter.value; this.render(); };
+        const search = toolbar.createEl("input", { type: "search", placeholder: "搜索文件和文件夹…", cls: "planner-docs-search" });
+        search.value = this.query;
+        search.onkeydown = (event) => { if (event.key === "Enter") {
+            this.query = search.value;
+            this.render();
+        } };
+        search.onblur = () => { if (this.query !== search.value) {
+            this.query = search.value;
+            this.render();
+        } };
+        const counts = toolbar.createEl("button", { text: this.nestedCounts ? "数量：包含下级" : "数量：仅当前层", cls: this.nestedCounts ? "planner-docs-count-control active" : "planner-docs-count-control" });
+        counts.onclick = () => { this.nestedCounts = !this.nestedCounts; this.render(); };
+        const depthGroup = toolbar.createDiv("planner-docs-depth-group");
+        const collapse = depthGroup.createEl("button", { text: "收起", cls: this.expandDepth === 0 ? "active" : "" });
+        collapse.onclick = () => { this.expandDepth = 0; this.expandedPaths.clear(); this.render(); };
+        [1, 2, 3].forEach((level) => {
+            const button = depthGroup.createEl("button", { text: `${level} 层`, cls: this.expandDepth === level ? "active" : "" });
+            button.onclick = () => { this.expandDepth = level; this.expandedPaths.clear(); this.render(); };
+        });
+        const expandAll = depthGroup.createEl("button", { text: "全部", cls: this.expandDepth >= 99 ? "active" : "" });
+        expandAll.onclick = () => { this.expandDepth = 99; this.expandedPaths.clear(); this.render(); };
+        const stats = container.createDiv("planner-docs-stats");
+        const fileStat = stats.createDiv("planner-docs-stat-card");
+        fileStat.createDiv({ text: String(allCounts.files), cls: "planner-docs-stat-value" });
+        fileStat.createDiv({ text: this.filter === "all" ? "全部文件" : "筛选后的文件", cls: "planner-docs-stat-label" });
+        const folderStat = stats.createDiv("planner-docs-stat-card");
+        folderStat.createDiv({ text: String(allCounts.folders), cls: "planner-docs-stat-value" });
+        folderStat.createDiv({ text: "文件夹", cls: "planner-docs-stat-label" });
+        const matchingFiles = this.filesUnder(root);
+        const mediaCount = matchingFiles.filter((file) => ["image", "video", "audio", "pdf"].includes(this.classify(file))).length;
+        const mediaStat = stats.createDiv("planner-docs-stat-card");
+        mediaStat.createDiv({ text: String(mediaCount), cls: "planner-docs-stat-value" });
+        mediaStat.createDiv({ text: "可预览附件", cls: "planner-docs-stat-label" });
+        const recentThreshold = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const recentCount = matchingFiles.filter((file) => file.stat.mtime >= recentThreshold).length;
+        const recentStat = stats.createDiv("planner-docs-stat-card");
+        recentStat.createDiv({ text: String(recentCount), cls: "planner-docs-stat-value" });
+        recentStat.createDiv({ text: "近 7 天更新", cls: "planner-docs-stat-label" });
+        const browser = container.createDiv("planner-docs-browser");
+        const browserHeader = browser.createDiv("planner-docs-browser-header");
+        const browserTabs = browserHeader.createDiv("planner-docs-browser-tabs");
+        browserTabs.createEl("strong", { text: "项目文件" });
+        const treeTab = browserTabs.createEl("button", { text: "目录树", cls: !this.mediaMode ? "active" : "" });
+        treeTab.onclick = () => { this.mediaMode = false; this.render(); };
+        const mediaTab = browserTabs.createEl("button", { text: "附件预览", cls: this.mediaMode ? "active" : "" });
+        mediaTab.onclick = () => { this.mediaMode = true; this.render(); };
+        const headerMedia = browserHeader.createEl("button", { cls: "planner-docs-browser-mode", title: this.mediaMode ? "切换到目录树" : "切换到附件预览" });
+        obsidian.setIcon(headerMedia, this.mediaMode ? "list-tree" : "layout-grid");
+        headerMedia.onclick = () => { this.mediaMode = !this.mediaMode; this.render(); };
+        if (this.mediaMode)
+            this.renderMedia(browser, root);
+        else
+            this.renderTree(browser, root);
+        this.renderRecent(container, root);
+    }
+}
+
 // Helper to get today's date in YYYY-MM-DD format
 function getTodayDate() {
     const now = new Date();
@@ -9315,6 +9719,49 @@ class TaskStore {
         }
         this.updateProjectTimestamp();
         await this.save();
+    }
+    /**
+     * Merge a markdown task into the project that owns its Tasks folder.
+     * Unlike addTaskFromObject(), this does not depend on the active project.
+     */
+    async addTaskFromObjectToProject(task, projectId) {
+        if (!this.tasksByProject[projectId]) {
+            this.tasksByProject[projectId] = [];
+        }
+        const projectTasks = this.tasksByProject[projectId];
+        const existing = projectTasks.find(t => t.id === task.id);
+        if (existing) {
+            for (const key of Object.keys(task)) {
+                if (task[key] !== undefined) {
+                    existing[key] = task[key];
+                }
+            }
+        }
+        else {
+            if (!task.createdDate)
+                task.createdDate = getTodayDate();
+            if (!task.lastModifiedDate)
+                task.lastModifiedDate = getTodayDate();
+            projectTasks.push(task);
+        }
+        this.tasksByProject[projectId] = projectTasks;
+        await this.writeProjectFile(projectId, projectTasks);
+        if (projectId === this.activeProjectId) {
+            this.tasks = projectTasks;
+            this.rebuildIndex();
+        }
+        this.emit();
+    }
+    /** Delete a markdown-backed task from its owning project, not the active project. */
+    async deleteTaskFromProject(id, projectId) {
+        const projectTasks = this.tasksByProject[projectId] || [];
+        this.tasksByProject[projectId] = projectTasks.filter(t => t.id !== id);
+        await this.writeProjectFile(projectId, this.tasksByProject[projectId]);
+        if (projectId === this.activeProjectId) {
+            this.tasks = this.tasksByProject[projectId];
+            this.rebuildIndex();
+        }
+        this.emit();
     }
     async addTaskToProject(task, projectId) {
         // Ensure project bucket exists
@@ -10242,14 +10689,15 @@ class TaskSync {
         }
         this.syncInProgress.add(task.id);
         try {
-            const existingTask = this.plugin.taskStore.getTaskById(task.id);
+            const existingTask = (this.plugin.taskStore.getAllForProject(projectId) || [])
+                .find(candidate => candidate.id === task.id);
             if (existingTask) {
                 // Check if title changed in markdown - if so, rename the file
                 const titleChanged = existingTask.title !== task.title;
                 // Update existing task (always update to ensure markdown is source of truth)
                 // Don't use updateTask as it triggers lastModifiedDate change
                 // Instead use addTaskFromObject which handles merging
-                await this.plugin.taskStore.addTaskFromObject(task);
+                await this.plugin.taskStore.addTaskFromObjectToProject(task, projectId);
                 // If title changed, rename the markdown file to match new title
                 if (titleChanged) {
                     const project = this.resolveProject(projectId);
@@ -10270,7 +10718,7 @@ class TaskSync {
             }
             else {
                 // Task doesn't exist in JSON - new task created via markdown
-                await this.plugin.taskStore.addTaskFromObject(task);
+                await this.plugin.taskStore.addTaskFromObjectToProject(task, projectId);
             }
         }
         finally {
@@ -10324,7 +10772,7 @@ class TaskSync {
                 const taskId = taskIdByPath.get(file.path);
                 if (taskId) {
                     taskIdByPath.delete(file.path);
-                    await this.plugin.taskStore.deleteTask(taskId);
+                    await this.plugin.taskStore.deleteTaskFromProject(taskId, projectId);
                 }
             }
         }));
@@ -10811,6 +11259,250 @@ class DailyNoteTaskScanner {
     }
 }
 
+/**
+ * Chinese UI layer.
+ *
+ * The planner stores status/priority values in English and uses those values in
+ * scheduling and reporting logic. Translating the rendered DOM instead of the
+ * persisted values keeps existing vaults compatible while presenting a fully
+ * Chinese interface.
+ */
+const ZH = {
+    "Project Planner": "项目计划",
+    "Project Planner Settings": "项目计划设置",
+    "My Project": "我的项目",
+    "No projects": "暂无项目",
+    "Dashboard": "仪表盘",
+    "My Tasks": "我的任务",
+    "Grid": "任务表",
+    "Board": "看板",
+    "Timeline": "时间线",
+    "Graph": "依赖关系图",
+    "Add Task": "添加任务",
+    "New Task": "新建任务",
+    "Columns": "列设置",
+    "Show / hide columns": "显示或隐藏列",
+    "Open plugin settings": "打开插件设置",
+    "Status:": "状态：",
+    "Priority:": "优先级：",
+    "All": "全部",
+    "Search tasks...": "搜索任务…",
+    "Clear all filters": "清除全部筛选",
+    "Title": "任务名称",
+    "Status": "状态",
+    "Priority": "优先级",
+    "Bucket": "分组",
+    "Tags": "标签",
+    "Deps": "依赖",
+    "Start Date": "开始日期",
+    "Due Date": "截止日期",
+    "Created": "创建日期",
+    "Modified": "修改日期",
+    "% Complete": "完成度",
+    "Effort Done": "已投入工时",
+    "Effort Left": "剩余工时",
+    "Effort Total": "总工时",
+    "Duration": "持续时间",
+    "Est. Cost": "预计成本",
+    "Actual Cost": "实际成本",
+    "Not Started": "未开始",
+    "In Progress": "进行中",
+    "Blocked": "已阻塞",
+    "Completed": "已完成",
+    "Low": "低",
+    "Medium": "中",
+    "High": "高",
+    "Critical": "紧急",
+    "Unassigned": "未分组",
+    "Today": "今天",
+    "Week": "本周",
+    "Month": "本月",
+    "This Week": "本周",
+    "Add to My Day": "添加到今日任务",
+    "Add Tasks to My Day": "添加任务到今日",
+    "Add Tasks": "添加已有任务",
+    "Show completed": "显示已完成",
+    "No tasks due today": "今天没有到期任务",
+    "Tasks with today's date as their due date will appear here.": "截止日期为今天的任务会显示在这里。",
+    "All tasks filtered out": "所有任务都被当前筛选条件隐藏了",
+    "No due date": "无截止日期",
+    "Add": "添加",
+    "Task Title": "任务名称",
+    "Description": "说明",
+    "Project": "项目",
+    "Checklist": "检查清单",
+    "Card Preview": "卡片预览",
+    "Dependencies": "依赖任务",
+    "Links & Attachments": "链接和附件",
+    "Copy Link": "复制链接",
+    "No task selected.": "尚未选择任务。",
+    "No description": "暂无说明",
+    "No dependencies": "暂无依赖任务",
+    "Select task...": "选择任务…",
+    "Finish-to-Start": "完成后开始",
+    "Start-to-Start": "同时开始",
+    "Finish-to-Finish": "同时完成",
+    "Start-to-Finish": "开始后完成",
+    "Add Link": "添加链接",
+    "No links or attachments": "暂无链接或附件",
+    "No tags assigned": "尚未分配标签",
+    "Add tag...": "添加标签…",
+    "Effort": "工时",
+    "Completed hours": "已完成工时",
+    "Remaining": "剩余",
+    "Total": "合计",
+    "hours": "小时",
+    "Cost": "成本",
+    "Cost Type:": "成本类型：",
+    "None": "无",
+    "Fixed": "固定金额",
+    "Hourly": "按小时",
+    "Estimated": "预计",
+    "Actual": "实际",
+    "Variance": "差额",
+    "Hourly Rate:": "每小时费率：",
+    "Refresh": "刷新",
+    "Reset Layout": "重置布局",
+    "Zoom:": "缩放：",
+    "Go to date": "跳转到日期",
+    "Go": "跳转",
+    "Cancel": "取消",
+    "No tasks match current filters.": "没有符合当前筛选条件的任务。",
+    "No tasks found": "没有找到任务",
+    "Completion Progress": "完成进度",
+    "Effort Summary": "工时汇总",
+    "Budget & Cost": "预算与成本",
+    "View Cost Report": "查看成本报告",
+    "Cost Report": "成本报告",
+    "Show All Projects": "显示所有项目",
+    "No projects found.": "没有找到项目。",
+    "No active project selected.": "尚未选择当前项目。",
+    "Total Tasks": "任务总数",
+    "Overdue": "已逾期",
+    "Due Today": "今天到期",
+    "Due This Week": "本周到期",
+    "Critical Priority": "紧急任务",
+    "High Priority": "高优先级",
+    "Has Dependencies": "存在依赖",
+    "Total Effort": "总工时",
+    "Avg % Complete": "平均完成度",
+    "Budget": "预算",
+    "Over Budget": "超出预算",
+    "Projects": "项目",
+    "Add project": "添加项目",
+    "Default view": "默认视图",
+    "Grid view": "任务表",
+    "Board view": "看板",
+    "Timeline (Gantt) view": "时间线（甘特图）",
+    "Dashboard view": "仪表盘",
+    "Date format": "日期格式",
+    "Ribbon icons": "侧边栏图标",
+    "Markdown sync": "Markdown 同步",
+    "Dependency scheduling": "依赖任务排期",
+    "Parent task roll-up": "父任务汇总",
+    "Daily note task tagging": "每日笔记任务标签",
+    "Actions": "操作",
+    "Statuses": "状态",
+    "Priorities": "优先级",
+    "Changelog": "更新日志",
+    "Sync Now": "立即同步",
+    "Scan notes": "扫描笔记",
+    "Open graph": "打开关系图",
+    "Create notes": "创建任务笔记",
+    "Add tag": "添加标签",
+    "Add status": "添加状态",
+    "Add priority": "添加优先级",
+    "Task link copied to clipboard": "任务链接已复制",
+    "Failed to copy link": "复制链接失败",
+    "Creating task note...": "正在创建任务笔记…",
+    "Failed to open task note": "无法打开任务笔记"
+};
+const PHRASES = [
+    [/^(\d+) tasks? due today$/, "今天到期：$1 项"],
+    [/^(\d+) tasks?$/, "$1 项任务"],
+    [/^Created:\s*/, "创建："],
+    [/^Last Updated:\s*/, "最近更新："],
+    [/^Open /, "打开"],
+    [/^No /, "暂无"],
+];
+function translateText(value) {
+    const trimmed = value.trim();
+    if (!trimmed)
+        return value;
+    let translated = ZH[trimmed];
+    if (!translated) {
+        translated = trimmed;
+        for (const [pattern, replacement] of PHRASES) {
+            if (pattern.test(translated)) {
+                translated = translated.replace(pattern, replacement);
+                break;
+            }
+        }
+    }
+    if (translated === trimmed)
+        return value;
+    const start = value.slice(0, value.indexOf(trimmed));
+    const end = value.slice(value.indexOf(trimmed) + trimmed.length);
+    return start + translated + end;
+}
+function translateElement(root) {
+    const elements = [];
+    if (root instanceof Element)
+        elements.push(root);
+    elements.push(...Array.from(root.querySelectorAll("*")));
+    for (const el of elements) {
+        for (const attr of ["title", "placeholder", "aria-label"]) {
+            const value = el.getAttribute(attr);
+            if (value)
+                el.setAttribute(attr, translateText(value));
+        }
+        for (const node of Array.from(el.childNodes)) {
+            if (node.nodeType === Node.TEXT_NODE && node.textContent) {
+                // An <option> without an explicit value derives its value from its
+                // text. Preserve the original application value before translating
+                // the visible label, otherwise selecting “进行中” would persist the
+                // Chinese label instead of the canonical "In Progress" value.
+                if (el instanceof HTMLOptionElement && !el.hasAttribute("value")) {
+                    el.setAttribute("value", node.textContent.trim());
+                }
+                node.textContent = translateText(node.textContent);
+            }
+        }
+    }
+}
+function startChineseUi() {
+    const selector = '[class*="planner-"], [class*="dashboard-"], [class*="myday-"], [data-project-planner-zh]';
+    const translateIfPlanner = (node) => {
+        if (node.textContent?.includes("Project Planner Settings")) {
+            const settingsRoot = node.closest(".vertical-tab-content") ?? node;
+            settingsRoot.setAttribute("data-project-planner-zh", "true");
+            translateElement(settingsRoot);
+            return;
+        }
+        const scope = node.matches(selector)
+            ? node
+            : node.closest(selector) ?? node.querySelector(selector);
+        if (scope)
+            translateElement(scope);
+    };
+    document.querySelectorAll(selector).forEach((el) => translateElement(el));
+    const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            for (const node of Array.from(mutation.addedNodes)) {
+                if (node instanceof Element)
+                    translateIfPlanner(node);
+                else if (node.nodeType === Node.TEXT_NODE &&
+                    node.textContent &&
+                    node.parentElement?.closest(selector)) {
+                    node.textContent = translateText(node.textContent);
+                }
+            }
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+}
+
 // Internal plugin view type
 const VIEW_TYPE_PLANNER = "project-planner-view";
 class ProjectPlannerPlugin extends obsidian.Plugin {
@@ -10820,6 +11512,9 @@ class ProjectPlannerPlugin extends obsidian.Plugin {
     }
     async onload() {
         await this.loadSettings();
+        // Present the plugin UI in Simplified Chinese without changing persisted
+        // status/priority values used by scheduling and reporting logic.
+        this.register(startChineseUi());
         // Migrate existing projects to add timestamps if missing
         this.migrateProjectTimestamps();
         // Ensure stylesheet is present (self-heal if Obsidian didn't attach it)
@@ -10885,6 +11580,7 @@ class ProjectPlannerPlugin extends obsidian.Plugin {
         this.registerView(VIEW_TYPE_DASHBOARD, (leaf) => new DashboardView(leaf, this));
         // Register My Tasks View
         this.registerView(VIEW_TYPE_MY_DAY, (leaf) => new MyDayView(leaf, this));
+        this.registerView(VIEW_TYPE_PROJECT_DOCUMENTS, (leaf) => new ProjectDocumentsView(leaf, this));
         // Command palette entry
         this.addCommand({
             id: "open-project-planner",
@@ -10920,6 +11616,11 @@ class ProjectPlannerPlugin extends obsidian.Plugin {
             id: "open-my-day-view",
             name: "Open My Tasks",
             callback: async () => await this.activateMyDayView(),
+        });
+        this.addCommand({
+            id: "open-project-documents-view",
+            name: "Open Project Documents",
+            callback: async () => await this.activateDocumentsView(),
         });
         // Command: Scan Daily Notes
         this.addCommand({
@@ -11037,6 +11738,9 @@ class ProjectPlannerPlugin extends obsidian.Plugin {
     // ---------------------------------------------------------------------------
     async activateMyDayView(forceNewTab = false) {
         return this.openViewByType(VIEW_TYPE_MY_DAY, forceNewTab);
+    }
+    async activateDocumentsView(forceNewTab = false) {
+        return this.openViewByType(VIEW_TYPE_PROJECT_DOCUMENTS, forceNewTab);
     }
     // ---------------------------------------------------------------------------
     // Open Task Detail Panel (RIGHT-SIDE split)

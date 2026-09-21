@@ -1,7 +1,7 @@
 import type ProjectPlannerPlugin from "../main";
 import { App, setIcon } from "obsidian";
 
-type ActiveView = "grid" | "board" | "graph" | "gantt" | "dashboard" | "myday";
+type ActiveView = "grid" | "board" | "graph" | "gantt" | "dashboard" | "myday" | "documents";
 
 export interface HeaderOptions {
     active: ActiveView;
@@ -97,6 +97,13 @@ export function renderPlannerHeader(
     });
     setIcon(graphViewBtn, "git-fork");
     graphViewBtn.onclick = async () => await plugin.openDependencyGraph();
+
+    const documentsViewBtn = viewSwitcher.createEl("button", {
+        cls: `planner-view-btn${options.active === "documents" ? " planner-view-btn-active" : ""}`,
+        title: "项目文档",
+    });
+    setIcon(documentsViewBtn, "folder-tree");
+    documentsViewBtn.onclick = async () => await plugin.activateDocumentsView();
 
     // Header actions (Add task, extra, Project Hub, Settings)
     const headerActions = header.createDiv("planner-header-actions");

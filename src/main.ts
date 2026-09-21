@@ -13,10 +13,12 @@ import { DependencyGraphView, VIEW_TYPE_DEPENDENCY_GRAPH } from "./ui/Dependency
 import { VIEW_TYPE_GANTT, GanttView } from "./ui/GanttView";
 import { DashboardView, VIEW_TYPE_DASHBOARD } from "./ui/DashboardView";
 import { MyDayView, VIEW_TYPE_MY_DAY } from "./ui/MyDayView";
+import { ProjectDocumentsView, VIEW_TYPE_PROJECT_DOCUMENTS } from "./ui/ProjectDocumentsView";
 
 import { TaskStore } from "./stores/taskStore";
 import { TaskSync } from "./utils/TaskSync";
 import { DailyNoteTaskScanner } from "./utils/DailyNoteTaskScanner";
+import { startChineseUi } from "./i18n";
 
 import type { PlannerTask } from "./types";
 
@@ -40,6 +42,10 @@ export default class ProjectPlannerPlugin extends Plugin {
 
   async onload() {
     await this.loadSettings();
+
+    // Present the plugin UI in Simplified Chinese without changing persisted
+    // status/priority values used by scheduling and reporting logic.
+    this.register(startChineseUi());
 
     // Migrate existing projects to add timestamps if missing
     this.migrateProjectTimestamps();
@@ -147,6 +153,11 @@ export default class ProjectPlannerPlugin extends Plugin {
       (leaf: WorkspaceLeaf) => new MyDayView(leaf, this)
     );
 
+    this.registerView(
+      VIEW_TYPE_PROJECT_DOCUMENTS,
+      (leaf: WorkspaceLeaf) => new ProjectDocumentsView(leaf, this)
+    );
+
     // Command palette entry
     this.addCommand({
       id: "open-project-planner",
@@ -187,6 +198,12 @@ export default class ProjectPlannerPlugin extends Plugin {
       id: "open-my-day-view",
       name: "Open My Tasks",
       callback: async () => await this.activateMyDayView(),
+    });
+
+    this.addCommand({
+      id: "open-project-documents-view",
+      name: "Open Project Documents",
+      callback: async () => await this.activateDocumentsView(),
     });
 
     // Command: Scan Daily Notes
@@ -318,6 +335,10 @@ export default class ProjectPlannerPlugin extends Plugin {
   // ---------------------------------------------------------------------------
   async activateMyDayView(forceNewTab = false): Promise<WorkspaceLeaf> {
     return this.openViewByType(VIEW_TYPE_MY_DAY, forceNewTab);
+  }
+
+  async activateDocumentsView(forceNewTab = false): Promise<WorkspaceLeaf> {
+    return this.openViewByType(VIEW_TYPE_PROJECT_DOCUMENTS, forceNewTab);
   }
 
   // ---------------------------------------------------------------------------

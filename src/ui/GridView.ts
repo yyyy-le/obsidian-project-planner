@@ -16,6 +16,7 @@ type SortKey =
   | "DueDate";
 
 const NON_HIDEABLE_COLUMNS = new Set(["drag", "number", "check"]);
+const DEFAULT_HIDDEN_COLUMNS = new Set(["created", "modified"]);
 
 interface VisibleRow {
   task: PlannerTask;
@@ -2151,9 +2152,14 @@ export class GridView extends ItemView {
       { key: "effortRemaining", label: "Effort Left", hideable: true, reorderable: true },
       { key: "effortTotal", label: "Effort Total", hideable: true, reorderable: true },
       { key: "duration", label: "Duration", hideable: true, reorderable: true },
-      { key: "costEstimate", label: "Est. Cost", hideable: true, reorderable: true },
-      { key: "costActual", label: "Actual Cost", hideable: true, reorderable: true },
     ];
+
+    if (this.plugin.settings.showCostFeatures) {
+      allColumns.push(
+        { key: "costEstimate", label: "Est. Cost", hideable: true, reorderable: true },
+        { key: "costActual", label: "Actual Cost", hideable: true, reorderable: true },
+      );
+    }
     
     // Apply custom column order if available
     if (this.columnOrder.length > 0) {
@@ -2415,7 +2421,7 @@ export class GridView extends ItemView {
       if (!col.hideable || NON_HIDEABLE_COLUMNS.has(col.key)) {
         this.columnVisibility[col.key] = true;
       } else if (this.columnVisibility[col.key] === undefined) {
-        this.columnVisibility[col.key] = true;
+        this.columnVisibility[col.key] = !DEFAULT_HIDDEN_COLUMNS.has(col.key);
       }
     });
 

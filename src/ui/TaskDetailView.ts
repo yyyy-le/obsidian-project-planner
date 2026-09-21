@@ -213,6 +213,23 @@ export class TaskDetailView extends ItemView {
       }
     );
 
+    // Keep project documents near the top: clicking a task should immediately
+    // reveal its evidence, deliverables, meeting notes, and reference files.
+    const documentsSection = container.createDiv("planner-documents-section");
+    const documentsHeader = documentsSection.createDiv("planner-documents-header");
+    const documentsTitle = documentsHeader.createDiv("planner-documents-title");
+    setIcon(documentsTitle.createSpan("planner-documents-title-icon"), "folder-open");
+    documentsTitle.createSpan({ text: "关联文档" });
+    documentsHeader.createSpan({
+      text: `${task.links?.length ?? 0} 个`,
+      cls: "planner-documents-count"
+    });
+    documentsSection.createDiv({
+      text: "会议纪要、需求、方案、表格和交付物都可以关联到这里。",
+      cls: "planner-documents-help"
+    });
+    this.renderLinks(documentsSection, task);
+
     //
     // PROJECT — dropdown (move task to another project)
     //
@@ -412,7 +429,9 @@ export class TaskDetailView extends ItemView {
     //
     // COST
     //
-    this.renderCostSection(container, task, isRolledUp);
+    if (this.plugin.settings.showCostFeatures) {
+      this.renderCostSection(container, task, isRolledUp);
+    }
 
     //
     // DEPENDENCIES
@@ -420,11 +439,6 @@ export class TaskDetailView extends ItemView {
     container.createEl("h3", { text: "Dependencies" });
     this.renderDependencies(container, task);
 
-    //
-    // LINKS / ATTACHMENTS
-    //
-    container.createEl("h3", { text: "Links & Attachments" });
-    this.renderLinks(container, task);
   }
 
   // ---------------------------------------------------------------------------
@@ -1030,7 +1044,7 @@ export class TaskDetailView extends ItemView {
           // Obsidian internal link
           linkEl.onclick = (e) => {
             e.preventDefault();
-            this.app.workspace.openLinkText(link.url, "", false);
+            this.app.workspace.openLinkText(link.url, "", true);
           };
         } else {
           // External link
@@ -1059,7 +1073,7 @@ export class TaskDetailView extends ItemView {
       cls: "planner-link-title-input",
       attr: {
         type: "text",
-        placeholder: "Link title"
+        placeholder: "文档名称"
       }
     });
 
@@ -1068,14 +1082,14 @@ export class TaskDetailView extends ItemView {
       cls: "planner-link-url-input",
       attr: {
         type: "text",
-        placeholder: "URL or [[Obsidian Link]]"
+        placeholder: "[[Obsidian 文档]] 或网址"
       }
     });
 
     // Add button
     const addBtn = addLinkDiv.createEl("button", {
       cls: "planner-link-add-btn",
-      text: "Add Link"
+      text: "添加文档"
     });
 
     addBtn.onclick = async () => {
@@ -1115,7 +1129,7 @@ export class TaskDetailView extends ItemView {
     // Add hint text
     const hintDiv = linkContainer.createDiv("planner-link-hint");
     hintDiv.createEl("small", {
-      text: "Tip: Use [[Page Name]] for Obsidian links or http(s):// for external links",
+      text: "提示：内部文档使用 [[文档名称]]，也可以粘贴外部网址。",
       cls: "planner-link-hint-text"
     });
   }

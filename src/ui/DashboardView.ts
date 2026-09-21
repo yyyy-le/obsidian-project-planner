@@ -622,7 +622,7 @@ export class DashboardView extends ItemView {
 
         // Cost / Budget section (show if any tasks have cost data or budget is set)
         const hasCostData = stats.totalEstimatedCost > 0 || stats.totalActualCost > 0 || stats.budgetTotal > 0;
-        if (hasCostData) {
+        if (this.plugin.settings.showCostFeatures && hasCostData) {
             const activeProj = this.plugin.settings.projects?.find(p => p.id === stats.projectId);
             const currency = activeProj?.currencySymbol || "$";
 

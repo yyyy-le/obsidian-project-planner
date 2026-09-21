@@ -30,8 +30,9 @@ export class GanttView extends ItemView {
         search: ""
     };
 
-    // Zoom level
-    private zoomLevel: "day" | "week" | "month" = "day";
+    // Gantt only needs weekly and monthly planning ranges.
+    private ganttRange: "week" | "month" = "week";
+    private rangeAnchorDate: Date | null = null;
 
     // Resizable layout
     private leftColumnWidth: number;
@@ -40,7 +41,7 @@ export class GanttView extends ItemView {
     private clipboardTask: { task: PlannerTask; isCut: boolean } | null = null;
 
     // Dependency arrows toggle
-    private showDependencyArrows: boolean = true;
+    private showDependencyArrows: boolean = false;
 
     // Scroll preservation
     private savedLeftScrollTop: number | null = null;
@@ -734,7 +735,8 @@ export class GanttView extends ItemView {
     }
 
     private scrollToDate(targetDate: Date) {
-        // Store target date and re-render (the render will handle scrolling)
+        targetDate.setHours(0, 0, 0, 0);
+        this.rangeAnchorDate = new Date(targetDate);
         this.scrollTargetDate = targetDate;
         this.render();
     }
@@ -967,19 +969,20 @@ export class GanttView extends ItemView {
 
         updateClearButtonVisibility();
 
-        // Zoom controls
-        const zoomControls = toolbar.createDiv("planner-gantt-zoom");
-        zoomControls.createSpan({ text: "Zoom: ", cls: "planner-zoom-label" });
-
-        const zoomBtnGroup = zoomControls.createDiv("planner-zoom-buttons");
-        ["day", "week", "month"].forEach((level) => {
-            const btn = zoomBtnGroup.createEl("button", {
-                text: level.charAt(0).toUpperCase() + level.slice(1),
-                cls: "planner-zoom-btn"
+        // Calendar range: the Gantt view intentionally offers only week/month.
+        const rangeControls = toolbar.createDiv("planner-gantt-zoom");
+        rangeControls.createSpan({ cls: "planner-filter-label", text: "范围：" });
+        const rangeButtonGroup = rangeControls.createDiv("planner-zoom-buttons");
+        ([
+            { value: "week", label: "本周" },
+            { value: "month", label: "本月" },
+        ] as const).forEach(({ value, label }) => {
+            const button = rangeButtonGroup.createEl("button", {
+                text: label,
+                cls: `planner-zoom-btn${this.ganttRange === value ? " active" : ""}`,
             });
-            if (level === this.zoomLevel) btn.classList.add("active");
-            btn.onclick = () => {
-                this.zoomLevel = level as "day" | "week" | "month";
+            button.onclick = () => {
+                this.ganttRange = value;
                 this.render();
             };
         });
@@ -998,21 +1001,58 @@ export class GanttView extends ItemView {
         const depArrowBtn = toolbar.createEl("button", {
             cls: `planner-dep-arrow-btn${this.showDependencyArrows ? " active" : ""}`,
         });
-        setIcon(depArrowBtn, "arrow-right");
-        depArrowBtn.setAttribute("title", this.showDependencyArrows ? "Hide dependency arrows" : "Show dependency arrows");
+        setIcon(depArrowBtn, "workflow");
+        depArrowBtn.setAttribute("title", this.showDependencyArrows ? "隐藏任务依赖线" : "显示任务依赖线");
         depArrowBtn.onclick = () => {
             this.showDependencyArrows = !this.showDependencyArrows;
             this.render();
         };
 
+        // Status legend: make bar colours understandable without guessing.
+        const legend = container.createDiv("planner-gantt-legend");
+        [
+            { label: "未开始", color: "#7A8491" },
+            { label: "进行中", color: "#3B6FD8" },
+            { label: "临近截止", color: "#D9902F" },
+            { label: "已阻塞", color: "#C2414B" },
+            { label: "已完成", color: "#2E7D5B" },
+        ].forEach(({ label, color }) => {
+            const item = legend.createDiv("planner-gantt-legend-item");
+            const swatch = item.createSpan("planner-gantt-legend-swatch");
+            swatch.style.backgroundColor = color;
+            item.createSpan({ text: label });
+        });
+
         // Content area
         const content = container.createDiv("planner-gantt-content");
         const allTasks: PlannerTask[] = this.plugin.taskStore.getAll();
 
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const anchorDate = new Date(this.rangeAnchorDate ?? today);
+        anchorDate.setHours(0, 0, 0, 0);
+        const viewStart = new Date(anchorDate);
+        const viewEnd = new Date(anchorDate);
+        if (this.ganttRange === "week") {
+            const daysSinceMonday = (anchorDate.getDay() + 6) % 7;
+            viewStart.setDate(anchorDate.getDate() - daysSinceMonday);
+            viewEnd.setTime(viewStart.getTime());
+            viewEnd.setDate(viewStart.getDate() + 6);
+        } else {
+            viewStart.setDate(1);
+            viewEnd.setMonth(viewStart.getMonth() + 1, 0);
+        }
+        const viewStartTime = viewStart.getTime();
+        const viewEndTime = viewEnd.getTime();
+
         // Build hierarchical task list with filters
         const matchesFilter = new Map<string, boolean>();
         for (const t of allTasks) {
-            matchesFilter.set(t.id, this.matchesFilters(t));
+            const isScheduled = Boolean(t.startDate || t.dueDate);
+            const range = this.getTaskRange(t, viewStartTime);
+            const overlapsSelectedRange = range.end >= viewStartTime && range.start <= viewEndTime;
+            matchesFilter.set(t.id, this.matchesFilters(t) && isScheduled && overlapsSelectedRange);
         }
 
         // Build visible task hierarchy
@@ -1050,63 +1090,23 @@ export class GanttView extends ItemView {
         }
 
         if (visibleTasks.length === 0) {
-            content.createEl("div", { text: "No tasks match current filters." });
+            content.createEl("div", {
+                text: this.ganttRange === "week" ? "本周没有已排期任务。" : "本月没有已排期任务。",
+            });
             return;
         }
 
-        // Determine timeline range from all visible tasks
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const ranges = visibleTasks.map((vt) => this.getTaskRange(vt.task, today.getTime()));
-        const dates: number[] = [];
-        for (const r of ranges) {
-            dates.push(r.start, r.end);
-        }
-        let minTime = dates.length ? Math.min(...dates) : today.getTime();
-        let maxTime = dates.length ? Math.max(...dates) : today.getTime() + 30 * this.dayMs;
-        // Ensure at least 30 days span
-        if (maxTime - minTime < 30 * this.dayMs) maxTime = minTime + 30 * this.dayMs;
+        const ranges = visibleTasks.map((vt) => this.getTaskRange(vt.task, viewStartTime));
+        const minTime = viewStartTime;
+        const maxTime = viewEndTime;
 
-        // Build scale with zoom-based day width
+        // Fit the full project range to the available viewport where possible.
         const dayMs = this.dayMs;
-        let dayWidth = 20; // px per day (default)
-        if (this.zoomLevel === "week") dayWidth = 8;
-        else if (this.zoomLevel === "month") dayWidth = 3;
-
-        // Calculate available width for timeline
         const containerWidth = this.containerEl.clientWidth;
-        const minTimelineWidth = containerWidth - this.leftColumnWidth - 50;
-
-        // Always add substantial padding for scrollable timeline
-        // More padding at higher zoom levels to ensure scrollability
-        const paddingMultiplier = this.zoomLevel === "month" ? 90 : this.zoomLevel === "week" ? 60 : 30;
-        minTime -= paddingMultiplier * dayMs;
-        maxTime += paddingMultiplier * dayMs;
-
-        // Normalize minTime and maxTime to midnight to ensure proper date alignment
-        const minDate = new Date(minTime);
-        minDate.setHours(0, 0, 0, 0);
-        minTime = minDate.getTime();
-
-        const maxDate = new Date(maxTime);
-        maxDate.setHours(0, 0, 0, 0);
-        maxTime = maxDate.getTime();
-
-        // Calculate total days and timeline width
-        let totalDays = Math.floor((maxTime - minTime) / dayMs) + 1;
-        let timelineWidth = totalDays * dayWidth;
-
-        // If timeline is still narrower than viewport, extend the date range further
-        if (timelineWidth < minTimelineWidth) {
-            const additionalDays = Math.ceil((minTimelineWidth - timelineWidth) / dayWidth) + 60; // Extra 60 days for scrolling
-            const daysAfter = additionalDays;
-
-            maxTime += daysAfter * dayMs;
-            
-            // Recalculate totalDays after extending maxTime
-            totalDays = Math.floor((maxTime - minTime) / dayMs) + 1;
-            timelineWidth = totalDays * dayWidth;
-        }
+        const minTimelineWidth = Math.max(320, containerWidth - this.leftColumnWidth - 50);
+        const totalDays = Math.floor((maxTime - minTime) / dayMs) + 1;
+        const dayWidth = Math.max(24, Math.floor(minTimelineWidth / totalDays));
+        const timelineWidth = Math.max(minTimelineWidth, totalDays * dayWidth);
 
         const finalTimelineWidth = timelineWidth; // Use actual timeline width, not clamped to minimum
 
@@ -1196,8 +1196,8 @@ export class GanttView extends ItemView {
             const monthCell = monthRow.createDiv("planner-gantt-month-header");
             monthCell.style.width = `${count * dayWidth}px`;
 
-            const monthText = date.toLocaleString(undefined, { month: 'short', year: 'numeric' });
-            monthCell.setText(monthText);
+            const monthText = `${date.getFullYear()}年${date.getMonth() + 1}月`;
+            monthCell.createSpan({ text: monthText, cls: "planner-gantt-month-label" });
         });
 
         // Render day/week cells based on zoom level
@@ -1206,22 +1206,10 @@ export class GanttView extends ItemView {
             const dayCell = dayRow.createDiv("planner-gantt-day-cell");
             dayCell.style.width = `${dayWidth}px`;
 
-            if (this.zoomLevel === "day") {
-                // Show day number on Mondays or 1st of month
-                if (date.getDay() === 1 || date.getDate() === 1) {
-                    dayCell.setText(`${date.getDate()}`);
-                }
-            } else if (this.zoomLevel === "week") {
-                // Show week start dates (Mondays)
-                if (date.getDay() === 1) {
-                    dayCell.setText(`${date.getDate()}`);
-                    dayCell.classList.add("planner-gantt-week-marker");
-                }
-            } else if (this.zoomLevel === "month") {
-                // Show day 1 and 15 for month view
-                if (date.getDate() === 1 || date.getDate() === 15) {
-                    dayCell.setText(`${date.getDate()}`);
-                }
+            // A week shows all seven dates; a month uses weekly markers.
+            if (this.ganttRange === "week" || i === 0 || date.getDay() === 1 || date.getDate() === 1) {
+                dayCell.setText(`${date.getMonth() + 1}/${date.getDate()}`);
+                if (date.getDay() === 1) dayCell.classList.add("planner-gantt-week-marker");
             }
         }
 
@@ -1239,17 +1227,20 @@ export class GanttView extends ItemView {
         const statusColor = (status: string, task: PlannerTask): string => {
             if (status !== "Completed" && task.dueDate && approachingMs > 0) {
                 const [y, m, d] = task.dueDate.split("-").map(Number);
-                const dueMs = new Date(y, m - 1, d).getTime();
+                // A date-only deadline remains valid through the end of that day.
+                // Using midnight made a task due today stop appearing amber as
+                // soon as the workday began.
+                const dueMs = new Date(y, m - 1, d, 23, 59, 59, 999).getTime();
                 if (dueMs >= nowMs && dueMs - nowMs <= approachingMs) {
-                    return "#f59e0b"; // amber — approaching due date
+                    return "#D9902F"; // amber — approaching due date
                 }
             }
             switch (status) {
-                case "Completed": return "#2f9e44";
-                case "In Progress": return "#0a84ff";
-                case "Blocked": return "#d70022";
+                case "Completed": return "#2E7D5B";
+                case "In Progress": return "#3B6FD8";
+                case "Blocked": return "#C2414B";
                 case "Not Started":
-                default: return "#6c757d";
+                default: return "#7A8491";
             }
         };
 

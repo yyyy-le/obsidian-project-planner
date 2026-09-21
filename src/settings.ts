@@ -77,6 +77,7 @@ export interface PlannerProject {
   id: string;
   name: string;
   storageKey?: string;
+  documentRootPath?: string; // Vault-relative folder shown in the project documents view
   createdDate?: string;
   lastUpdatedDate?: string;
   lastSyncTimestamp?: number; // Unix timestamp of last successful sync
@@ -98,6 +99,7 @@ export interface ProjectPlannerSettings {
   defaultTaskStatus: string; // Default status for new tasks (empty = first available)
   openLinksInNewTab: boolean;
   openViewsInNewTab: boolean;
+  showCostFeatures: boolean; // Optional budget/cost UI, hidden by default for personal work planning
   availableTags: PlannerTag[];
   availableStatuses: PlannerStatus[];
   availablePriorities: PlannerPriority[];
@@ -156,6 +158,7 @@ export const DEFAULT_SETTINGS: ProjectPlannerSettings = {
   defaultTaskStatus: "",
   openLinksInNewTab: false,
   openViewsInNewTab: false,
+  showCostFeatures: false,
   availableTags: [],
   availableStatuses: [
     { id: "not-started", name: "Not Started", color: "#6c757d" },
@@ -326,14 +329,27 @@ export class ProjectPlannerSettingTab extends PluginSettingTab {
         });
     });
 
+    new Setting(containerEl)
+      .setName("显示成本与预算功能")
+      .setDesc("默认关闭。仅在需要管理项目预算、费率和实际成本时开启。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.showCostFeatures)
+          .onChange(async (value) => {
+            this.plugin.settings.showCostFeatures = value;
+            await this.plugin.saveSettings();
+            this.display();
+          })
+      );
+
     // -----------------------------------------------------------------
-    // Cost Tracking — per-project budget, rate, and currency settings
+    // Cost Tracking — optional per-project budget, rate, and currency
     // -----------------------------------------------------------------
     const activeProject = this.plugin.settings.projects.find(
       p => p.id === this.plugin.settings.activeProjectId
     );
 
-    if (activeProject) {
+    if (activeProject && this.plugin.settings.showCostFeatures) {
       containerEl.createEl("h3", { text: `Cost Tracking — ${activeProject.name}` });
 
       new Setting(containerEl)
